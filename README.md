@@ -5,7 +5,7 @@ A web scraping repository that recursively crawls websites and extracts URLs usi
 
 - **Iterative URL Processing**: Uses two sets (visited and to-visit) instead of recursive functions
 - **Regex-based URL Extraction**: Extracts URLs from HTML content using regular expressions
-- **Time Monitoring**: Automatically stops after 1 hour of execution
+- **Time Monitoring**: Automatically stops after 6 hours of execution
 - **State Persistence**: Saves progress to file and can resume from where it left off
 - **Progress Tracking**: Real-time statistics on scraped pages and found URLs
 - **No External Dependencies**: Uses only Python standard library
@@ -19,17 +19,17 @@ A web scraping repository that recursively crawls websites and extracts URLs usi
 
 ### Quick Start with Wikipedia
 
-The easiest way to start scraping is with the Wikipedia scraper:
+The easiest way to start scraping is with the Wikipedia preset:
 
 ```bash
 # Start scraping Wikipedia (default: 100 pages)
-python scrape_wikipedia.py
+python scraper.py --wikipedia
 
 # Scrape with custom page limit
-python scrape_wikipedia.py 50
+python scraper.py --wikipedia 50
 
 # Resume from saved state
-python scrape_wikipedia.py --resume
+python scraper.py --wikipedia --resume
 ```
 
 ### General Usage
@@ -56,6 +56,12 @@ python scraper.py https://example.com 200 --resume
 python scraper.py https://www.python.org 200
 ```
 
+### Available Options
+
+- `--wikipedia` or `-w`: Use Wikipedia as the starting URL
+- `--resume`: Resume from saved state (scraper_state.json)
+- `--help` or `-h`: Show help message
+
 ## State Persistence
 
 The scraper automatically saves its state to `scraper_state.json` every 10 pages and at the end of scraping. This allows you to:
@@ -81,7 +87,7 @@ To resume scraping, simply add the `--resume` flag when running the scraper.
    - Continuously processes URLs from the queue
    - Adds newly found URLs to the queue
    - Skips already visited URLs
-5. **Time monitoring**: Checks elapsed time before each URL and stops if execution exceeds 1 hour
+5. **Time monitoring**: Checks elapsed time before each URL and stops if execution exceeds 6 hours
 6. **State persistence**: Saves progress every 10 pages and at the end
 7. **Results**: Saves all visited URLs and statistics to `scraper_results.txt`
 
@@ -95,10 +101,8 @@ The scraper provides:
 
 ## Files
 
-- **`scraper.py`**: Main scraper module with state persistence
-- **`scrape_wikipedia.py`**: Convenience script for scraping Wikipedia
+- **`scraper.py`**: Main scraper module with state persistence and Wikipedia preset
 - **`test_scraper.py`**: Unit tests
-- **`demo.py`**: Demonstration script
 
 ## Automated Scraping with GitHub Actions
 
@@ -128,7 +132,7 @@ The workflow is defined in `.github/workflows/scraper.yml` and:
 
 ## Limitations
 
-- Maximum execution time: 1 hour
+- Maximum execution time: 6 hours
 - Default maximum pages: 100 (configurable)
 - Timeout per request: 10 seconds
 - Only follows http:// and https:// URLs
