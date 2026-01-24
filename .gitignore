@@ -34,6 +34,7 @@ ENV/
 
 # Output files
 scraper_results.txt
+scraper_state.json
 *.log
 
 # OS

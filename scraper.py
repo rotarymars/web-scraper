@@ -5,13 +5,70 @@ Web Scraper - Iterative URL crawler with regex-based link extraction
 import re
 import time
 import socket
+import json
 import urllib.request
 import urllib.parse
 from urllib.error import URLError, HTTPError
 from typing import Set
+from pathlib import Path
 
 # Maximum execution time in seconds (1 hour)
 MAX_EXECUTION_TIME = 3600
+
+# State file for saving and resuming scraper progress
+STATE_FILE = "scraper_state.json"
+
+def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str, 
+               pages_scraped: int, urls_found: int, elapsed_time: float):
+    """
+    Save the current scraper state to a JSON file.
+    
+    Args:
+        visited_urls: Set of URLs that have been visited
+        to_visit_urls: Set of URLs that need to be visited
+        start_url: The initial URL
+        pages_scraped: Number of pages scraped so far
+        urls_found: Total URLs found so far
+        elapsed_time: Time elapsed since start
+    """
+    state = {
+        'start_url': start_url,
+        'visited_urls': list(visited_urls),
+        'to_visit_urls': list(to_visit_urls),
+        'pages_scraped': pages_scraped,
+        'urls_found': urls_found,
+        'elapsed_time': elapsed_time,
+        'timestamp': time.time()
+    }
+    
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=2)
+    
+    print(f"  State saved to {STATE_FILE}")
+
+def load_state():
+    """
+    Load scraper state from a JSON file.
+    
+    Returns:
+        Dictionary with state data, or None if file doesn't exist
+    """
+    state_path = Path(STATE_FILE)
+    if not state_path.exists():
+        return None
+    
+    try:
+        with open(STATE_FILE, 'r') as f:
+            state = json.load(f)
+        
+        # Convert lists back to sets
+        state['visited_urls'] = set(state['visited_urls'])
+        state['to_visit_urls'] = set(state['to_visit_urls'])
+        
+        return state
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Error loading state file: {e}")
+        return None
 
 def extract_urls(html_content: str, base_url: str) -> Set[str]:
     """
@@ -80,31 +137,57 @@ def fetch_url(url: str, timeout: int = 10) -> str:
         print(f"Unexpected error fetching {url}: {e}")
         return ""
 
-def scrape(start_url: str, max_pages: int = 100) -> dict:
+def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_interval: int = 10) -> dict:
     """
     Scrape URLs starting from a single URL, using iterative processing.
     
     Args:
         start_url: The initial URL to start scraping from
         max_pages: Maximum number of pages to scrape
+        resume: Whether to resume from saved state
+        save_interval: Save state every N pages (default: 10)
         
     Returns:
         Dictionary with scraping statistics
     """
-    # Set of URLs that have been visited/processed
-    visited_urls: Set[str] = set()
+    # Try to resume from saved state
+    if resume:
+        state = load_state()
+        if state:
+            print("Resuming from saved state...")
+            print(f"  Previous start URL: {state['start_url']}")
+            print(f"  Pages already scraped: {state['pages_scraped']}")
+            print(f"  URLs in queue: {len(state['to_visit_urls'])}")
+            print(f"  URLs visited: {len(state['visited_urls'])}")
+            print("-" * 80)
+            
+            visited_urls = state['visited_urls']
+            to_visit_urls = state['to_visit_urls']
+            pages_scraped = state['pages_scraped']
+            urls_found = state['urls_found']
+            start_time = time.time() - state['elapsed_time']
+            actual_start_url = state['start_url']
+        else:
+            print("No saved state found. Starting fresh...")
+            visited_urls = set()
+            to_visit_urls = {start_url}
+            pages_scraped = 0
+            urls_found = 0
+            start_time = time.time()
+            actual_start_url = start_url
+    else:
+        # Start fresh
+        visited_urls = set()
+        to_visit_urls = {start_url}
+        pages_scraped = 0
+        urls_found = 0
+        start_time = time.time()
+        actual_start_url = start_url
     
-    # Set of URLs that need to be processed
-    to_visit_urls: Set[str] = {start_url}
-    
-    # Track statistics
-    start_time = time.time()
-    pages_scraped = 0
-    urls_found = 0
-    
-    print(f"Starting web scraper from: {start_url}")
+    print(f"Starting web scraper from: {actual_start_url}")
     print(f"Max execution time: {MAX_EXECUTION_TIME} seconds ({MAX_EXECUTION_TIME/3600} hour)")
     print(f"Max pages: {max_pages}")
+    print(f"State will be saved every {save_interval} pages")
     print("-" * 80)
     
     # Iterative processing instead of recursion
@@ -149,10 +232,19 @@ def scrape(start_url: str, max_pages: int = 100) -> dict:
         print(f"  Found {len(found_urls)} URLs ({len(new_urls)} new)")
         print(f"  Queue size: {len(to_visit_urls)}, Visited: {len(visited_urls)}")
         print(f"  Elapsed time: {elapsed_time:.2f}s")
+        
+        # Save state periodically
+        if pages_scraped % save_interval == 0:
+            save_state(visited_urls, to_visit_urls, actual_start_url, 
+                      pages_scraped, urls_found, elapsed_time)
     
     # Calculate final statistics
     end_time = time.time()
     total_time = end_time - start_time
+    
+    # Save final state
+    save_state(visited_urls, to_visit_urls, actual_start_url, 
+              pages_scraped, urls_found, total_time)
     
     print("-" * 80)
     print("Scraping completed!")
@@ -163,7 +255,7 @@ def scrape(start_url: str, max_pages: int = 100) -> dict:
     print(f"URLs remaining in queue: {len(to_visit_urls)}")
     
     return {
-        'start_url': start_url,
+        'start_url': actual_start_url,
         'total_time': total_time,
         'pages_scraped': pages_scraped,
         'urls_found': urls_found,
@@ -178,20 +270,31 @@ def main():
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python scraper.py <start_url> [max_pages]")
+        print("Usage: python scraper.py <start_url> [max_pages] [--resume]")
         print("Example: python scraper.py https://example.com 50")
+        print("Example: python scraper.py https://example.com 50 --resume")
+        print("\nOptions:")
+        print("  --resume    Resume from saved state (scraper_state.json)")
         sys.exit(1)
     
     start_url = sys.argv[1]
-    max_pages = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+    max_pages = 100
+    resume = False
     
-    # Validate URL
-    if not start_url.startswith(('http://', 'https://')):
+    # Parse arguments
+    for i, arg in enumerate(sys.argv[2:], start=2):
+        if arg == '--resume':
+            resume = True
+        elif arg.isdigit():
+            max_pages = int(arg)
+    
+    # Validate URL (only if not resuming)
+    if not resume and not start_url.startswith(('http://', 'https://')):
         print("Error: URL must start with http:// or https://")
         sys.exit(1)
     
     # Run the scraper
-    results = scrape(start_url, max_pages)
+    results = scrape(start_url, max_pages, resume=resume)
     
     # Optionally save results to a file
     output_file = "scraper_results.txt"
@@ -209,6 +312,8 @@ def main():
             f.write(f"{url}\n")
     
     print(f"\nResults saved to {output_file}")
+    print(f"State saved to {STATE_FILE}")
+    print(f"\nTo resume scraping, run: python scraper.py {results['start_url']} {max_pages} --resume")
 
 if __name__ == "__main__":
     main()
