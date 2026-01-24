@@ -1,9 +1,9 @@
 {
   "start_url": "https://en.wikipedia.org/wiki/Main_Page",
-  "pages_scraped": 10000,
-  "urls_found": 6313950,
-  "elapsed_time": 5987.329229831696,
-  "timestamp": 1769254263.5638633,
+  "pages_scraped": 20000,
+  "urls_found": 12988625,
+  "elapsed_time": 13147.40211391449,
+  "timestamp": 1769272098.3199368,
   "visited_urls_chunks": [
     "state/scraper_state_visited_0.json"
   ],
@@ -14,20 +14,8 @@
     "state/scraper_state_to_visit_3.json",
     "state/scraper_state_to_visit_4.json",
     "state/scraper_state_to_visit_5.json",
-    "state/scraper_state_to_visit_6.json",
-    "state/scraper_state_to_visit_7.json",
-    "state/scraper_state_to_visit_8.json",
-    "state/scraper_state_to_visit_9.json",
-    "state/scraper_state_to_visit_10.json",
-    "state/scraper_state_to_visit_11.json",
-    "state/scraper_state_to_visit_12.json",
-    "state/scraper_state_to_visit_13.json",
-    "state/scraper_state_to_visit_14.json",
-    "state/scraper_state_to_visit_15.json",
-    "state/scraper_state_to_visit_16.json",
-    "state/scraper_state_to_visit_17.json",
-    "state/scraper_state_to_visit_18.json"
+    "state/scraper_state_to_visit_6.json"
   ],
-  "visited_urls_count": 10000,
-  "to_visit_urls_count": 1827702
+  "visited_urls_count": 20000,
+  "to_visit_urls_count": 3255600
 }
