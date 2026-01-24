@@ -8,13 +8,13 @@ The easiest way to start using the web scraper is with Wikipedia:
 
 ```bash
 # Scrape 100 pages from Wikipedia (default)
-python scrape_wikipedia.py
+python scraper.py --wikipedia
 
 # Scrape 50 pages
-python scrape_wikipedia.py 50
+python scraper.py --wikipedia 50
 
 # Scrape 200 pages
-python scrape_wikipedia.py 200
+python scraper.py --wikipedia 200
 ```
 
 ### Resume Scraping
@@ -23,10 +23,10 @@ If the scraper stops (time limit, manual interrupt, or any other reason), you ca
 
 ```bash
 # Resume from saved state (URL not needed - loaded from state)
-python scrape_wikipedia.py --resume
+python scraper.py --resume
 
-# Resume and set a new page limit
-python scrape_wikipedia.py --resume 500
+# Resume with Wikipedia and set a new page limit
+python scraper.py --wikipedia --resume 500
 ```
 
 ## Output Files
@@ -54,14 +54,14 @@ The scraper creates two important files:
 ## Example Workflow
 
 ```bash
-# 1. Start scraping Wikipedia with a 1-hour limit
-python scrape_wikipedia.py 1000
+# 1. Start scraping Wikipedia with a 6-hour limit
+python scraper.py --wikipedia 1000
 
-# ... scraper runs and might stop after 1 hour ...
+# ... scraper runs and might stop after 6 hours ...
 # ... say it scraped 400 pages before stopping ...
 
 # 2. Resume scraping to continue
-python scrape_wikipedia.py 1000 --resume
+python scraper.py --wikipedia 1000 --resume
 
 # ... scraper continues from page 401 ...
 ```

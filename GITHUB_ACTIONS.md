@@ -22,8 +22,8 @@ The Wikipedia scraper is integrated with GitHub Actions to run automatically eve
    - Installs latest Python 3.x
 
 3. **Run Scraper**
-   - Attempts to resume from saved state: `python scrape_wikipedia.py --resume 50`
-   - If no state exists, starts fresh: `python scrape_wikipedia.py 50`
+   - Attempts to resume from saved state: `python scraper.py --wikipedia --resume 50`
+   - If no state exists, starts fresh: `python scraper.py --wikipedia 50`
    - Scrapes 50 pages per run to stay within CI time limits
 
 4. **Commit Results**

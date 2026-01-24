@@ -19,17 +19,17 @@ A web scraping repository that recursively crawls websites and extracts URLs usi
 
 ### Quick Start with Wikipedia
 
-The easiest way to start scraping is with the Wikipedia scraper:
+The easiest way to start scraping is with the Wikipedia preset:
 
 ```bash
 # Start scraping Wikipedia (default: 100 pages)
-python scrape_wikipedia.py
+python scraper.py --wikipedia
 
 # Scrape with custom page limit
-python scrape_wikipedia.py 50
+python scraper.py --wikipedia 50
 
 # Resume from saved state
-python scrape_wikipedia.py --resume
+python scraper.py --wikipedia --resume
 ```
 
 ### General Usage
@@ -55,6 +55,12 @@ python scraper.py https://example.com 200 --resume
 # Scrape a different site
 python scraper.py https://www.python.org 200
 ```
+
+### Available Options
+
+- `--wikipedia` or `-w`: Use Wikipedia as the starting URL
+- `--resume`: Resume from saved state (scraper_state.json)
+- `--help` or `-h`: Show help message
 
 ## State Persistence
 
@@ -95,8 +101,7 @@ The scraper provides:
 
 ## Files
 
-- **`scraper.py`**: Main scraper module with state persistence
-- **`scrape_wikipedia.py`**: Convenience script for scraping Wikipedia
+- **`scraper.py`**: Main scraper module with state persistence and Wikipedia preset
 - **`test_scraper.py`**: Unit tests
 
 ## Automated Scraping with GitHub Actions
