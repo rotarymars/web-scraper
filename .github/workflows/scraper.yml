@@ -26,10 +26,14 @@ jobs:
       
       - name: Run Wikipedia scraper
         run: |
-          # Run scraper with resume flag to continue from where it left off
-          # Limit to 50 pages per run to avoid timeout
-          python scrape_wikipedia.py --resume 50 || python scrape_wikipedia.py 50
-        continue-on-error: false
+          # Check if state file exists to determine whether to resume
+          if [ -f scraper_state.json ]; then
+            echo "State file found, resuming scraping..."
+            python scrape_wikipedia.py --resume 50
+          else
+            echo "No state file found, starting fresh..."
+            python scrape_wikipedia.py 50
+          fi
       
       - name: Configure Git
         run: |
