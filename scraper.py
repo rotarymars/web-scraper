@@ -12,8 +12,8 @@ from urllib.error import URLError, HTTPError
 from typing import Set
 from pathlib import Path
 
-# Maximum execution time in seconds (1 hour)
-MAX_EXECUTION_TIME = 3600
+# Maximum execution time in seconds (6 hours)
+MAX_EXECUTION_TIME = 21600
 
 # State file for saving and resuming scraper progress
 STATE_FILE = "scraper_state.json"

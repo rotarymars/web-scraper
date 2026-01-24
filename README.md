@@ -5,7 +5,7 @@ A web scraping repository that recursively crawls websites and extracts URLs usi
 
 - **Iterative URL Processing**: Uses two sets (visited and to-visit) instead of recursive functions
 - **Regex-based URL Extraction**: Extracts URLs from HTML content using regular expressions
-- **Time Monitoring**: Automatically stops after 1 hour of execution
+- **Time Monitoring**: Automatically stops after 6 hours of execution
 - **State Persistence**: Saves progress to file and can resume from where it left off
 - **Progress Tracking**: Real-time statistics on scraped pages and found URLs
 - **No External Dependencies**: Uses only Python standard library
@@ -81,7 +81,7 @@ To resume scraping, simply add the `--resume` flag when running the scraper.
    - Continuously processes URLs from the queue
    - Adds newly found URLs to the queue
    - Skips already visited URLs
-5. **Time monitoring**: Checks elapsed time before each URL and stops if execution exceeds 1 hour
+5. **Time monitoring**: Checks elapsed time before each URL and stops if execution exceeds 6 hours
 6. **State persistence**: Saves progress every 10 pages and at the end
 7. **Results**: Saves all visited URLs and statistics to `scraper_results.txt`
 
@@ -98,7 +98,6 @@ The scraper provides:
 - **`scraper.py`**: Main scraper module with state persistence
 - **`scrape_wikipedia.py`**: Convenience script for scraping Wikipedia
 - **`test_scraper.py`**: Unit tests
-- **`demo.py`**: Demonstration script
 
 ## Automated Scraping with GitHub Actions
 
@@ -128,7 +127,7 @@ The workflow is defined in `.github/workflows/scraper.yml` and:
 
 ## Limitations
 
-- Maximum execution time: 1 hour
+- Maximum execution time: 6 hours
 - Default maximum pages: 100 (configurable)
 - Timeout per request: 10 seconds
 - Only follows http:// and https:// URLs
