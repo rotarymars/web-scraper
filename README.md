@@ -100,6 +100,32 @@ The scraper provides:
 - **`test_scraper.py`**: Unit tests
 - **`demo.py`**: Demonstration script
 
+## Automated Scraping with GitHub Actions
+
+This repository includes a GitHub Actions workflow that automatically scrapes Wikipedia every 2 hours.
+
+### How it works
+
+- **Schedule**: Runs every 2 hours via cron schedule (`0 */2 * * *`)
+- **Manual trigger**: Can also be triggered manually via GitHub Actions UI
+- **Resume support**: Automatically resumes from saved state
+- **Data persistence**: Commits and pushes `scraper_state.json` and `scraper_results.txt` after each run
+- **Page limit**: Scrapes 50 pages per run to avoid timeout
+
+### Workflow file
+
+The workflow is defined in `.github/workflows/scraper.yml` and:
+1. Checks out the repository
+2. Sets up Python
+3. Runs the scraper with `--resume` flag (or starts fresh if no state exists)
+4. Commits and pushes the results back to the repository
+
+### Viewing the results
+
+- Check `scraper_state.json` for the current scraper state
+- Check `scraper_results.txt` for the complete list of scraped URLs
+- View workflow runs in the "Actions" tab on GitHub
+
 ## Limitations
 
 - Maximum execution time: 1 hour

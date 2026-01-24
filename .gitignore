@@ -33,8 +33,7 @@ ENV/
 *~
 
 # Output files
-scraper_results.txt
-scraper_state.json
+# Note: scraper_results.txt and scraper_state.json are tracked for CI
 *.log
 
 # OS
