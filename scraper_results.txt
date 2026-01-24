@@ -1,11 +1,60 @@
 Web Scraper Results
 ================================================================================
 Start URL: https://en.wikipedia.org/wiki/Main_Page
-Total Time: 0.00 seconds
-Pages Scraped: 0
-Total URLs Found: 0
-Unique URLs Visited: 0
+Total Time: 22.83 seconds
+Pages Scraped: 50
+Total URLs Found: 21774
+Unique URLs Visited: 50
 
 Visited URLs:
 --------------------------------------------------------------------------------
-(No URLs scraped yet. The GitHub Actions workflow will update this file every 2 hours.)
+http://hdl.handle.net/10891/osa:281b1f30-1d75-4853-be73-842076b21aa2
+http://nobelprize.org/about/privacy-policy/
+http://nobelprize.org/nobel_prizes/physics/laureates/1996/index.html
+http://schema.org/Organization
+https://af.wikiquote.org/wiki/
+https://bs.wikipedia.org/bswiki/w/index.php?title=Posebno:Korisni%C4%8Dka_prijava&amp;returntoquery=%3F&amp;centralauthLoginToken=29f551cd2935da090fe85c6dd783d144&amp;usesul3=1&amp;useformat=desktop&amp;uselang=fr
+https://bs.wikipedia.org/w/index.php?title=Posebno:Korisni%C4%8Dka_prijava&amp;returnto=Po%C4%8Detna+strana
+https://bs.wikipedia.org/wiki/Datoteka:Bosnian_Wikipedia_Homepage_July_2020.png
+https://bs.wikipedia.org/wiki/Po%C4%8Detna_strana
+https://bs.wikipedia.org/wiki/Portal:Događaji?action=edit&amp;redlink=1
+https://bs.wikipedia.org/wiki/Wikipedia:Kako_početi_novu_stranicu
+https://bs.wikipedia.org/wiki/Wikipedia_na_bosanskom_jeziku
+https://en.wikipedia.org/wiki/Arnold_Rimmer
+https://en.wikipedia.org/wiki/Arnold_Rimmer#cite_note-46
+https://en.wikipedia.org/wiki/Byte
+https://en.wikipedia.org/wiki/Byte#cite_note-84
+https://en.wikipedia.org/wiki/Magnetic_core
+https://en.wikipedia.org/wiki/Main_Page
+https://en.wikiquote.org/w/index.php?title=Red_Dwarf&amp;action=edit&amp;section=14
+https://en.wikiquote.org/w/index.php?title=Red_Dwarf&amp;action=edit&amp;section=61
+https://en.wikiquote.org/wiki/Main_Page
+https://en.wikiquote.org/wiki/Red_Dwarf
+https://en.wikiquote.org/wiki/Red_Dwarf#Demons_&amp;_Angels
+https://na.wikiquote.org/wiki/
+https://os.wikipedia.org/wiki/%D0%A1%C3%A6%D0%B9%D1%80%D0%B0%D0%B3_%D1%84%D0%B0%D1%80%D1%81
+https://os.wikipedia.org/wiki/14_январы
+https://pl.wikipedia.org/wiki/Wikipedia:Strona_g%C5%82%C3%B3wna
+https://ru.wikiquote.org/wiki/%D0%97%D0%B0%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F_%D1%81%D1%82%D1%80%D0%B0%D0%BD%D0%B8%D1%86%D0%B0
+https://sh.wikipedia.org/w/index.php?title=1975.&amp;veaction=edit&amp;section=18
+https://sh.wikipedia.org/w/index.php?title=Emir_Suljagi%C4%87&amp;action=edit&amp;redlink=1
+https://sh.wikipedia.org/w/index.php?title=Glavna_stranica&amp;action=history
+https://sh.wikipedia.org/w/index.php?title=Mary_Pierce&amp;action=edit&amp;redlink=1
+https://sh.wikipedia.org/wiki/
+https://sh.wikipedia.org/wiki/1959.
+https://sh.wikipedia.org/wiki/1975.
+https://sh.wikipedia.org/wiki/1975.#cite_ref-Osa76_23-1
+https://sh.wikipedia.org/wiki/2019.
+https://sh.wikipedia.org/wiki/2019.#Jun/Juni/Lipanj
+https://sh.wikipedia.org/wiki/Aleksej_Leonov
+https://sh.wikipedia.org/wiki/Bajt
+https://sh.wikipedia.org/wiki/Indijski_nacionalni_kalendar
+https://sh.wikipedia.org/wiki/Kolinda_Grabar-Kitarovi%C4%87
+https://sh.wikipedia.org/wiki/Nobelova_nagrada_za_fiziku
+https://sh.wikipedia.org/wiki/Strip
+https://sh.wikipedia.org/wiki/Tanjug
+https://stats.wikimedia.org/#/pl.wikipedia.org
+https://th.wikipedia.org/wiki/%E0%B8%AD%E0%B8%B0%E0%B9%80%E0%B8%A5%E0%B8%84%E0%B9%80%E0%B8%8B%E0%B8%A2%E0%B9%8C_%E0%B9%80%E0%B8%A5%E0%B9%82%E0%B8%AD%E0%B8%99%E0%B8%AD%E0%B8%9F
+https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/JJ_Thomson.jpg/120px-JJ_Thomson.jpg
+https://upload.wikimedia.org/wikipedia/commons/thumb/f/ff/Wikidata-logo.svg/20px-Wikidata-logo.svg.png
+https://web.archive.org/web/20161026232743/https://www.vodafone.ie/planscosts_bus/data/
