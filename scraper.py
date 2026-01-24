@@ -17,7 +17,7 @@ import glob as file_glob
 MAX_EXECUTION_TIME = 21600
 
 # State file for saving and resuming scraper progress
-STATE_FILE = "scraper_state.json"
+STATE_FILE = "state/scraper_state.json"
 
 # Maximum URLs per chunk file (approximately 7-8MB per chunk, well under GitHub's 50MB limit)
 MAX_URLS_PER_CHUNK = 500000
@@ -51,14 +51,14 @@ def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str,
     # Save chunks to separate files
     visited_chunk_files = []
     for i, chunk in enumerate(visited_chunks):
-        chunk_file = f"scraper_state_visited_{i}.json"
+        chunk_file = f"state/scraper_state_visited_{i}.json"
         with open(chunk_file, 'w') as f:
             json.dump(chunk, f)
         visited_chunk_files.append(chunk_file)
     
     to_visit_chunk_files = []
     for i, chunk in enumerate(to_visit_chunks):
-        chunk_file = f"scraper_state_to_visit_{i}.json"
+        chunk_file = f"state/scraper_state_to_visit_{i}.json"
         with open(chunk_file, 'w') as f:
             json.dump(chunk, f)
         to_visit_chunk_files.append(chunk_file)
@@ -154,7 +154,7 @@ def _split_into_chunks(items: List[str], chunk_size: int) -> List[List[str]]:
 def _cleanup_old_chunks():
     """Remove old chunk files before saving new ones."""
     # Patterns to match chunk files
-    patterns = ["scraper_state_visited_*.json", "scraper_state_to_visit_*.json"]
+    patterns = ["state/scraper_state_visited_*.json", "state/scraper_state_to_visit_*.json"]
     
     for pattern in patterns:
         for old_file in file_glob.glob(pattern):

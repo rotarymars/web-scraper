@@ -33,7 +33,7 @@ python scraper.py --wikipedia --resume 500
 
 The scraper creates two important files:
 
-1. **`scraper_state.json`** - Contains the current state of the scraper:
+1. **`state/scraper_state.json`** - Contains the current state of the scraper:
    - Which URLs have been visited
    - Which URLs are queued to visit
    - Statistics (pages scraped, URLs found, elapsed time)
