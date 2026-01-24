@@ -20,7 +20,7 @@ MAX_EXECUTION_TIME = 21600
 STATE_FILE = "scraper_state.json"
 
 # Maximum URLs per chunk file (approximately 7-8MB per chunk, well under GitHub's 50MB limit)
-MAX_URLS_PER_CHUNK = 100000
+MAX_URLS_PER_CHUNK = 500000
 
 def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str, 
                pages_scraped: int, urls_found: int, elapsed_time: float):
