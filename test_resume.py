@@ -5,7 +5,7 @@ Test the resume functionality to ensure it can continue scraping from saved stat
 import os
 import json
 import unittest
-from scraper import scrape, save_state, load_state, STATE_FILE
+from scraper import save_state, load_state, STATE_FILE
 
 class TestResumeFunctionality(unittest.TestCase):
     
