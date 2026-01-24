@@ -150,6 +150,9 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
     Returns:
         Dictionary with scraping statistics
     """
+    # Store the original start time for tracking total elapsed time
+    original_elapsed = 0
+    
     # Try to resume from saved state
     if resume:
         state = load_state()
@@ -165,7 +168,7 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
             to_visit_urls = state['to_visit_urls']
             pages_scraped = state['pages_scraped']
             urls_found = state['urls_found']
-            start_time = time.time() - state['elapsed_time']
+            original_elapsed = state['elapsed_time']
             actual_start_url = state['start_url']
         else:
             print("No saved state found. Starting fresh...")
@@ -173,7 +176,6 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
             to_visit_urls = {start_url}
             pages_scraped = 0
             urls_found = 0
-            start_time = time.time()
             actual_start_url = start_url
     else:
         # Start fresh
@@ -181,8 +183,10 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
         to_visit_urls = {start_url}
         pages_scraped = 0
         urls_found = 0
-        start_time = time.time()
         actual_start_url = start_url
+    
+    # Record when this session started
+    session_start_time = time.time()
     
     print(f"Starting web scraper from: {actual_start_url}")
     print(f"Max execution time: {MAX_EXECUTION_TIME} seconds ({MAX_EXECUTION_TIME/3600} hour)")
@@ -192,10 +196,12 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
     
     # Iterative processing instead of recursion
     while to_visit_urls:
-        # Check execution time
-        elapsed_time = time.time() - start_time
-        if elapsed_time > MAX_EXECUTION_TIME:
-            print(f"\nExecution time limit reached ({elapsed_time:.2f} seconds)")
+        # Check execution time (session time + any previous elapsed time)
+        session_elapsed = time.time() - session_start_time
+        total_elapsed = original_elapsed + session_elapsed
+        
+        if total_elapsed > MAX_EXECUTION_TIME:
+            print(f"\nExecution time limit reached ({total_elapsed:.2f} seconds)")
             break
         
         # Check max pages limit
@@ -231,16 +237,16 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
         
         print(f"  Found {len(found_urls)} URLs ({len(new_urls)} new)")
         print(f"  Queue size: {len(to_visit_urls)}, Visited: {len(visited_urls)}")
-        print(f"  Elapsed time: {elapsed_time:.2f}s")
+        print(f"  Elapsed time: {total_elapsed:.2f}s")
         
         # Save state periodically
         if pages_scraped % save_interval == 0:
             save_state(visited_urls, to_visit_urls, actual_start_url, 
-                      pages_scraped, urls_found, elapsed_time)
+                      pages_scraped, urls_found, total_elapsed)
     
     # Calculate final statistics
-    end_time = time.time()
-    total_time = end_time - start_time
+    session_elapsed = time.time() - session_start_time
+    total_time = original_elapsed + session_elapsed
     
     # Save final state
     save_state(visited_urls, to_visit_urls, actual_start_url, 
@@ -269,29 +275,46 @@ def main():
     """Main entry point for the scraper."""
     import sys
     
-    if len(sys.argv) < 2:
-        print("Usage: python scraper.py <start_url> [max_pages] [--resume]")
-        print("Example: python scraper.py https://example.com 50")
-        print("Example: python scraper.py https://example.com 50 --resume")
-        print("\nOptions:")
-        print("  --resume    Resume from saved state (scraper_state.json)")
-        sys.exit(1)
+    # Check for resume flag
+    resume = '--resume' in sys.argv
     
-    start_url = sys.argv[1]
-    max_pages = 100
-    resume = False
-    
-    # Parse arguments
-    for i, arg in enumerate(sys.argv[2:], start=2):
-        if arg == '--resume':
-            resume = True
-        elif arg.isdigit():
-            max_pages = int(arg)
-    
-    # Validate URL (only if not resuming)
-    if not resume and not start_url.startswith(('http://', 'https://')):
-        print("Error: URL must start with http:// or https://")
-        sys.exit(1)
+    if resume:
+        # When resuming, URL is optional (loaded from state)
+        if len(sys.argv) < 2:
+            print("Usage: python scraper.py --resume [max_pages]")
+            print("Example: python scraper.py --resume")
+            print("Example: python scraper.py --resume 200")
+            sys.exit(1)
+        
+        # Parse arguments for resume mode
+        start_url = ""  # Will be loaded from state
+        max_pages = 100
+        
+        for arg in sys.argv[1:]:
+            if arg != '--resume' and arg.isdigit():
+                max_pages = int(arg)
+    else:
+        # Normal mode requires URL
+        if len(sys.argv) < 2:
+            print("Usage: python scraper.py <start_url> [max_pages] [--resume]")
+            print("Example: python scraper.py https://example.com 50")
+            print("Example: python scraper.py https://example.com 50 --resume")
+            print("\nOptions:")
+            print("  --resume    Resume from saved state (scraper_state.json)")
+            sys.exit(1)
+        
+        start_url = sys.argv[1]
+        max_pages = 100
+        
+        # Parse arguments
+        for arg in sys.argv[2:]:
+            if arg.isdigit():
+                max_pages = int(arg)
+        
+        # Validate URL
+        if not start_url.startswith(('http://', 'https://')):
+            print("Error: URL must start with http:// or https://")
+            sys.exit(1)
     
     # Run the scraper
     results = scrape(start_url, max_pages, resume=resume)
