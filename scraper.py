@@ -306,6 +306,13 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
     print(f"State will be saved every {save_interval} pages")
     print("-" * 80)
     
+    # Check if queue is empty when resuming
+    if resume and not to_visit_urls:
+        print("\nWarning: No URLs in queue to scrape!")
+        print("The scraper has already visited all discoverable URLs from the start URL.")
+        print("Scraping cannot continue without URLs in the queue.")
+        print("-" * 80)
+    
     # Iterative processing instead of recursion
     while to_visit_urls:
         # Check execution time (session time + any previous elapsed time)

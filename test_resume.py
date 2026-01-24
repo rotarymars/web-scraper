@@ -97,6 +97,28 @@ class TestResumeFunctionality(unittest.TestCase):
                 new_limit = pages_scraped + additional_pages
                 self.assertEqual(new_limit, expected_limit)
                 self.assertGreaterEqual(new_limit, pages_scraped)
+    
+    def test_resume_with_empty_queue(self):
+        """Test that empty queue state is handled correctly when resuming"""
+        # Create a state where all URLs have been visited (empty queue)
+        visited = {"https://httpbin.org/html"}
+        to_visit = set()  # Empty queue
+        start_url = "https://httpbin.org/html"
+        pages_scraped = 1
+        urls_found = 0
+        elapsed_time = 0.025
+        
+        # Save the state
+        save_state(visited, to_visit, start_url, pages_scraped, urls_found, elapsed_time)
+        
+        # Load state
+        state = load_state()
+        self.assertIsNotNone(state)
+        self.assertEqual(len(state['to_visit_urls']), 0)
+        self.assertEqual(len(state['visited_urls']), 1)
+        
+        # Verify that the queue is indeed empty
+        self.assertEqual(state['to_visit_urls_count'], 0)
 
 if __name__ == '__main__':
     unittest.main()
