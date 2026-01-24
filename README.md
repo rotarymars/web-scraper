@@ -77,6 +77,8 @@ The state file contains:
 
 To resume scraping, simply add the `--resume` flag when running the scraper.
 
+**Important**: When resuming, the `max_pages` parameter represents **additional pages** to scrape, not the absolute total. For example, if you've already scraped 100 pages and run with `--resume` and `max_pages=50`, it will scrape 50 more pages (up to 150 total).
+
 ## How It Works
 
 1. **Start with a single URL**: The scraper begins with one URL provided by the user
