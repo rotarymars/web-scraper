@@ -4,6 +4,7 @@ Web Scraper - Iterative URL crawler with regex-based link extraction
 """
 import re
 import time
+import socket
 import urllib.request
 import urllib.parse
 from urllib.error import URLError, HTTPError
@@ -29,7 +30,7 @@ def extract_urls(html_content: str, base_url: str) -> Set[str]:
     patterns = [
         r'href=["\']([^"\']+)["\']',  # href attributes
         r'src=["\']([^"\']+)["\']',   # src attributes
-        r'http[s]?://[^\s<>"{}|\\^`\[\]]+',  # direct URLs
+        r'http[s]?://[^\s<>"{}|\\^`\[\]]+[^\s<>"{}|\\^`\[\].,;:!?\'\")]',  # direct URLs
     ]
     
     for pattern in patterns:
@@ -72,7 +73,7 @@ def fetch_url(url: str, timeout: int = 10) -> str:
                     return content.decode('latin-1')
                 except UnicodeDecodeError:
                     return content.decode('utf-8', errors='ignore')
-    except (URLError, HTTPError, TimeoutError) as e:
+    except (URLError, HTTPError, socket.timeout) as e:
         print(f"Error fetching {url}: {e}")
         return ""
     except Exception as e:
