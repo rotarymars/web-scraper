@@ -1,37 +1,13 @@
 {
-  "start_url": "https://en.wikipedia.org/wiki/Main_Page",
-  "pages_scraped": 12000,
-  "urls_found": 9834935,
-  "elapsed_time": 8841.416929244995,
-  "timestamp": 1769243341.1238213,
+  "start_url": "https://httpbin.org/html",
+  "pages_scraped": 1,
+  "urls_found": 0,
+  "elapsed_time": 0.02525019645690918,
+  "timestamp": 1769246361.9503353,
   "visited_urls_chunks": [
     "scraper_state_visited_0.json"
   ],
-  "to_visit_urls_chunks": [
-    "scraper_state_to_visit_0.json",
-    "scraper_state_to_visit_1.json",
-    "scraper_state_to_visit_2.json",
-    "scraper_state_to_visit_3.json",
-    "scraper_state_to_visit_4.json",
-    "scraper_state_to_visit_5.json",
-    "scraper_state_to_visit_6.json",
-    "scraper_state_to_visit_7.json",
-    "scraper_state_to_visit_8.json",
-    "scraper_state_to_visit_9.json",
-    "scraper_state_to_visit_10.json",
-    "scraper_state_to_visit_11.json",
-    "scraper_state_to_visit_12.json",
-    "scraper_state_to_visit_13.json",
-    "scraper_state_to_visit_14.json",
-    "scraper_state_to_visit_15.json",
-    "scraper_state_to_visit_16.json",
-    "scraper_state_to_visit_17.json",
-    "scraper_state_to_visit_18.json",
-    "scraper_state_to_visit_19.json",
-    "scraper_state_to_visit_20.json",
-    "scraper_state_to_visit_21.json",
-    "scraper_state_to_visit_22.json"
-  ],
-  "visited_urls_count": 12000,
-  "to_visit_urls_count": 2206530
+  "to_visit_urls_chunks": [],
+  "visited_urls_count": 1,
+  "to_visit_urls_count": 0
 }
