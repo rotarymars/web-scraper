@@ -59,12 +59,12 @@ python scraper.py https://www.python.org 200
 ### Available Options
 
 - `--wikipedia` or `-w`: Use Wikipedia as the starting URL
-- `--resume`: Resume from saved state (scraper_state.json)
+- `--resume`: Resume from saved state (state/scraper_state.json)
 - `--help` or `-h`: Show help message
 
 ## State Persistence
 
-The scraper automatically saves its state to `scraper_state.json` every 10 pages and at the end of scraping. This allows you to:
+The scraper automatically saves its state to `state/scraper_state.json` every 10 pages and at the end of scraping. This allows you to:
 
 - **Resume interrupted scraping**: If the scraper stops (time limit, crash, manual stop), you can resume from where it left off
 - **Continue across sessions**: Stop scraping and resume later without losing progress
@@ -99,7 +99,7 @@ The scraper provides:
 - Real-time console output with progress
 - Final statistics (pages scraped, URLs found, execution time)
 - Results file (`scraper_results.txt`) with all visited URLs
-- State file (`scraper_state.json`) for resuming
+- State file (`state/scraper_state.json`) for resuming
 
 ## Files
 
@@ -115,7 +115,7 @@ This repository includes a GitHub Actions workflow that automatically scrapes Wi
 - **Schedule**: Runs every 2 hours via cron schedule (`0 */2 * * *`)
 - **Manual trigger**: Can also be triggered manually via GitHub Actions UI
 - **Resume support**: Automatically resumes from saved state
-- **Data persistence**: Commits and pushes `scraper_state.json` and `scraper_results.txt` after each run
+- **Data persistence**: Commits and pushes `state/scraper_state.json` and `scraper_results.txt` after each run
 - **Page limit**: Scrapes 50 pages per run to avoid timeout
 
 ### Workflow file
@@ -128,7 +128,7 @@ The workflow is defined in `.github/workflows/scraper.yml` and:
 
 ### Viewing the results
 
-- Check `scraper_state.json` for the current scraper state
+- Check `state/scraper_state.json` for the current scraper state
 - Check `scraper_results.txt` for the complete list of scraped URLs
 - View workflow runs in the "Actions" tab on GitHub
 

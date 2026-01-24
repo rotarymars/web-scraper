@@ -28,7 +28,7 @@ The Wikipedia scraper is integrated with GitHub Actions to run automatically eve
 
 4. **Commit Results**
    - Configures Git with bot credentials
-   - Commits `scraper_state.json` and `scraper_results.txt`
+   - Commits `state/scraper_state.json` and `scraper_results.txt`
    - Pushes changes back to the repository
    - Uses `[skip ci]` to prevent triggering another workflow run
 
@@ -42,7 +42,7 @@ The Wikipedia scraper is integrated with GitHub Actions to run automatically eve
 
 ## Files Managed by CI
 
-- **`scraper_state.json`**: Current state of the scraper (visited/queued URLs, statistics)
+- **`state/scraper_state.json`**: Current state of the scraper (visited/queued URLs, statistics)
 - **`scraper_results.txt`**: Human-readable list of all scraped URLs
 
 ## Monitoring
