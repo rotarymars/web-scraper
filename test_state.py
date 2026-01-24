@@ -73,6 +73,15 @@ def test_state_persistence():
         os.remove(STATE_FILE)
         print(f"   ✓ Removed test state file")
     
+    # Clean up chunk files
+    import glob
+    chunk_files = glob.glob("scraper_state_*.json")
+    for chunk_file in chunk_files:
+        if os.path.exists(chunk_file):
+            os.remove(chunk_file)
+    if chunk_files:
+        print(f"   ✓ Removed {len(chunk_files)} chunk files")
+    
     if all_passed:
         print("\n✓ All tests passed!")
         return True

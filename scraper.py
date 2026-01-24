@@ -9,8 +9,9 @@ import json
 import urllib.request
 import urllib.parse
 from urllib.error import URLError, HTTPError
-from typing import Set
+from typing import Set, List
 from pathlib import Path
+import glob as file_glob
 
 # Maximum execution time in seconds (6 hours)
 MAX_EXECUTION_TIME = 21600
@@ -18,10 +19,13 @@ MAX_EXECUTION_TIME = 21600
 # State file for saving and resuming scraper progress
 STATE_FILE = "scraper_state.json"
 
+# Maximum URLs per chunk file (to keep files under ~10MB)
+MAX_URLS_PER_CHUNK = 100000
+
 def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str, 
                pages_scraped: int, urls_found: int, elapsed_time: float):
     """
-    Save the current scraper state to a JSON file.
+    Save the current scraper state to JSON files, splitting large URL lists into chunks.
     
     Args:
         visited_urls: Set of URLs that have been visited
@@ -31,24 +35,54 @@ def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str,
         urls_found: Total URLs found so far
         elapsed_time: Time elapsed since start
     """
+    # Clean up old chunk files first
+    _cleanup_old_chunks()
+    
+    # Convert sets to lists
+    visited_list = list(visited_urls)
+    to_visit_list = list(to_visit_urls)
+    
+    # Split large lists into chunks
+    visited_chunks = _split_into_chunks(visited_list, MAX_URLS_PER_CHUNK)
+    to_visit_chunks = _split_into_chunks(to_visit_list, MAX_URLS_PER_CHUNK)
+    
+    # Save chunks to separate files
+    visited_chunk_files = []
+    for i, chunk in enumerate(visited_chunks):
+        chunk_file = f"scraper_state_visited_{i}.json"
+        with open(chunk_file, 'w') as f:
+            json.dump(chunk, f)
+        visited_chunk_files.append(chunk_file)
+    
+    to_visit_chunk_files = []
+    for i, chunk in enumerate(to_visit_chunks):
+        chunk_file = f"scraper_state_to_visit_{i}.json"
+        with open(chunk_file, 'w') as f:
+            json.dump(chunk, f)
+        to_visit_chunk_files.append(chunk_file)
+    
+    # Save main state with references to chunks
     state = {
         'start_url': start_url,
-        'visited_urls': list(visited_urls),
-        'to_visit_urls': list(to_visit_urls),
         'pages_scraped': pages_scraped,
         'urls_found': urls_found,
         'elapsed_time': elapsed_time,
-        'timestamp': time.time()
+        'timestamp': time.time(),
+        'visited_urls_chunks': visited_chunk_files,
+        'to_visit_urls_chunks': to_visit_chunk_files,
+        'visited_urls_count': len(visited_list),
+        'to_visit_urls_count': len(to_visit_list)
     }
     
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=2)
     
-    print(f"  State saved to {STATE_FILE}")
+    total_chunks = len(visited_chunk_files) + len(to_visit_chunk_files)
+    print(f"  State saved to {STATE_FILE} with {total_chunks} chunk files")
 
 def load_state():
     """
-    Load scraper state from a JSON file.
+    Load scraper state from JSON files, including any chunk files.
     
     Returns:
         Dictionary with state data, or None if file doesn't exist
@@ -61,14 +95,69 @@ def load_state():
         with open(STATE_FILE, 'r') as f:
             state = json.load(f)
         
-        # Convert lists back to sets
-        state['visited_urls'] = set(state['visited_urls'])
-        state['to_visit_urls'] = set(state['to_visit_urls'])
+        # Check if this is the new format with chunks
+        if 'visited_urls_chunks' in state and 'to_visit_urls_chunks' in state:
+            # Load visited URLs from chunks
+            visited_urls = []
+            for chunk_file in state['visited_urls_chunks']:
+                if Path(chunk_file).exists():
+                    with open(chunk_file, 'r') as f:
+                        visited_urls.extend(json.load(f))
+            
+            # Load to_visit URLs from chunks
+            to_visit_urls = []
+            for chunk_file in state['to_visit_urls_chunks']:
+                if Path(chunk_file).exists():
+                    with open(chunk_file, 'r') as f:
+                        to_visit_urls.extend(json.load(f))
+            
+            # Convert lists back to sets
+            state['visited_urls'] = set(visited_urls)
+            state['to_visit_urls'] = set(to_visit_urls)
+        else:
+            # Old format - backward compatibility
+            state['visited_urls'] = set(state.get('visited_urls', []))
+            state['to_visit_urls'] = set(state.get('to_visit_urls', []))
         
         return state
     except (json.JSONDecodeError, KeyError) as e:
         print(f"Error loading state file: {e}")
         return None
+
+def _split_into_chunks(items: List[str], chunk_size: int) -> List[List[str]]:
+    """
+    Split a list into chunks of maximum size.
+    
+    Args:
+        items: List of items to split
+        chunk_size: Maximum number of items per chunk
+        
+    Returns:
+        List of chunks (each chunk is a list)
+    """
+    if not items:
+        return []
+    
+    chunks = []
+    for i in range(0, len(items), chunk_size):
+        chunks.append(items[i:i + chunk_size])
+    return chunks
+
+def _cleanup_old_chunks():
+    """Remove old chunk files before saving new ones."""
+    # Remove old visited chunks
+    for old_file in file_glob.glob("scraper_state_visited_*.json"):
+        try:
+            Path(old_file).unlink()
+        except OSError:
+            pass
+    
+    # Remove old to_visit chunks
+    for old_file in file_glob.glob("scraper_state_to_visit_*.json"):
+        try:
+            Path(old_file).unlink()
+        except OSError:
+            pass
 
 def extract_urls(html_content: str, base_url: str) -> Set[str]:
     """
