@@ -3,7 +3,6 @@
 Test the resume functionality to ensure it can continue scraping from saved state
 """
 import os
-import json
 import unittest
 from scraper import save_state, load_state, STATE_FILE
 
