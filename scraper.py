@@ -305,27 +305,24 @@ def main():
     start_url = ""
     max_pages = 100
     
-    if resume:
-        # When resuming, URL is optional (loaded from state)
-        # Parse max_pages from arguments
-        for arg in sys.argv[1:]:
-            if arg.isdigit():
-                max_pages = int(arg)
-    elif use_wikipedia:
+    # Parse max_pages - find first numeric argument
+    for arg in sys.argv[1:]:
+        if arg.isdigit():
+            max_pages = int(arg)
+            break
+    
+    # Determine mode and start_url
+    if use_wikipedia:
         # Wikipedia mode
         start_url = WIKIPEDIA_URL
-        # Parse max_pages from arguments
-        for arg in sys.argv[1:]:
-            if arg.isdigit():
-                max_pages = int(arg)
-        
-        print("=" * 80)
-        print("Wikipedia Web Scraper")
-        print("=" * 80)
-        print(f"Starting from: {WIKIPEDIA_URL}")
-        print()
-    else:
-        # Normal mode - requires URL
+        if not resume:
+            print("=" * 80)
+            print("Wikipedia Web Scraper")
+            print("=" * 80)
+            print(f"Starting from: {WIKIPEDIA_URL}")
+            print()
+    elif not resume:
+        # Normal mode - requires URL (unless resuming)
         if len(sys.argv) < 2:
             print("Usage: python scraper.py [url|--wikipedia] [max_pages] [--resume]")
             print("Example: python scraper.py https://example.com 50")
@@ -335,26 +332,22 @@ def main():
             print("Use --help for more information")
             sys.exit(1)
         
-        # First non-flag argument is the URL
+        # First non-flag, non-numeric argument is the URL
         for arg in sys.argv[1:]:
             if not arg.startswith('-') and not arg.isdigit():
                 start_url = arg
                 break
         
         if not start_url:
-            print("Error: URL required (or use --wikipedia)")
+            print("Error: URL required (or use --wikipedia or --resume)")
             sys.exit(1)
-        
-        # Parse max_pages from arguments
-        for arg in sys.argv[2:]:
-            if arg.isdigit():
-                max_pages = int(arg)
         
         # Validate URL
         if not start_url.startswith(('http://', 'https://')):
             print("Error: URL must start with http:// or https://")
             sys.exit(1)
     
+    # If resuming without --wikipedia, start_url will be loaded from state
     # Run the scraper
     results = scrape(start_url, max_pages, resume=resume)
     

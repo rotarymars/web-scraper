@@ -1,11 +1,11 @@
 Web Scraper Results
 ================================================================================
 Start URL: https://en.wikipedia.org/wiki/Main_Page
-Total Time: 0.00 seconds
-Pages Scraped: 0
+Total Time: 0.02 seconds
+Pages Scraped: 1
 Total URLs Found: 0
-Unique URLs Visited: 0
+Unique URLs Visited: 1
 
 Visited URLs:
 --------------------------------------------------------------------------------
-(No URLs scraped yet. The GitHub Actions workflow will update this file every 2 hours.)
+https://en.wikipedia.org/wiki/Main_Page
