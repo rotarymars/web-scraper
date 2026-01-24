@@ -1,10 +1,10 @@
 Web Scraper Results
 ================================================================================
 Start URL: https://en.wikipedia.org/wiki/Main_Page
-Total Time: 22.89 seconds
-Pages Scraped: 100
+Total Time: 22.92 seconds
+Pages Scraped: 105
 Total URLs Found: 21774
-Unique URLs Visited: 100
+Unique URLs Visited: 105
 
 Visited URLs:
 --------------------------------------------------------------------------------
@@ -57,6 +57,7 @@ https://na.wikiquote.org/wiki/
 https://nah.wikipedia.org/wiki/1975
 https://os.wikipedia.org/wiki/%D0%A1%C3%A6%D0%B9%D1%80%D0%B0%D0%B3_%D1%84%D0%B0%D1%80%D1%81
 https://os.wikipedia.org/wiki/14_январы
+https://os.wikipedia.org/wiki/6_февралы
 https://pa.wikipedia.org/wiki/2019
 https://pl.wikipedia.org/wiki/Scott_Adams
 https://pl.wikipedia.org/wiki/Wikipedia:Strona_g%C5%82%C3%B3wna
@@ -91,6 +92,7 @@ https://sh.wikipedia.org/wiki/Kolinda_Grabar-Kitarovi%C4%87
 https://sh.wikipedia.org/wiki/Nobelova_nagrada_za_fiziku
 https://sh.wikipedia.org/wiki/Posebno:Tra%C5%BEi_ISBN/978-0-389-20695-8
 https://sh.wikipedia.org/wiki/Praxis
+https://sh.wikipedia.org/wiki/Salvatore_Quasimodo
 https://sh.wikipedia.org/wiki/Strip
 https://sh.wikipedia.org/wiki/Tanjug
 https://sh.wikipedia.org/wiki/Theresa_May
@@ -100,9 +102,12 @@ https://th.wikipedia.org/wiki/%E0%B8%AD%E0%B8%B0%E0%B9%80%E0%B8%A5%E0%B8%84%E0%B
 https://upload.wikimedia.org/wikipedia/commons/thumb/0/0c/Wikifunctions-logo.svg/40px-Wikifunctions-logo.svg.png
 https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/JJ_Thomson.jpg/120px-JJ_Thomson.jpg
 https://upload.wikimedia.org/wikipedia/commons/thumb/f/ff/Wikidata-logo.svg/20px-Wikidata-logo.svg.png
+https://upload.wikimedia.org/wikipedia/en/thumb/0/06/Wiktionary-logo-v2.svg/40px-Wiktionary-logo-v2.svg.png
 https://web.archive.org/web/20161026232743/http://deviceguides.vodafone.ie/web/view/tablet/
 https://web.archive.org/web/20161026232743/https://www.vodafone.ie/planscosts_bus/data/
+https://wuu.wikipedia.org/wiki/%E9%98%BF%E5%88%97%E5%85%8B%E8%B0%A2%C2%B7%E5%88%97%E6%98%82%E8%AF%BA%E5%A4%AB
 https://www.nobelprize.org/wp-content/themes/nobelprize/assets/fonts/alfred/AlfredSansTF-Bold.woff2
+https://www.vodafone.ie/business-support/contact-us
 https://www.vodafone.ie/small-business/phones-plans/red-business
 https://www.wikidata.org/wiki/Q1047829
 https://www.wikidata.org/wiki/Q371267#

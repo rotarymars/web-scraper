@@ -143,7 +143,8 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
     
     Args:
         start_url: The initial URL to start scraping from
-        max_pages: Maximum number of pages to scrape
+        max_pages: Maximum number of pages to scrape. When resuming, this is 
+                   treated as additional pages to scrape (not absolute limit)
         resume: Whether to resume from saved state
         save_interval: Save state every N pages (default: 10)
         
@@ -170,6 +171,11 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
             urls_found = state['urls_found']
             original_elapsed = state['elapsed_time']
             actual_start_url = state['start_url']
+            
+            # When resuming, treat max_pages as additional pages to scrape
+            # rather than absolute limit, to allow continued progress
+            max_pages = pages_scraped + max_pages
+            print(f"  Will scrape up to {max_pages} total pages (continuing from {pages_scraped})")
         else:
             print("No saved state found. Starting fresh...")
             visited_urls = set()
