@@ -42,8 +42,8 @@ jobs:
       
       - name: Commit and push results
         run: |
-          # Add the state and results files
-          git add scraper_state.json scraper_results.txt
+          # Add the state and results files (including chunk files)
+          git add scraper_state*.json scraper_results.txt
           
           # Check if there are changes to commit
           if git diff --staged --quiet; then
