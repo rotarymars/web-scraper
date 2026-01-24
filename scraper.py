@@ -35,6 +35,8 @@ def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str,
         urls_found: Total URLs found so far
         elapsed_time: Time elapsed since start
     """
+    save_start = time.time()
+    
     # Clean up old chunk files first
     _cleanup_old_chunks()
     
@@ -77,8 +79,9 @@ def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str,
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=2)
     
+    save_time = time.time() - save_start
     total_chunks = len(visited_chunk_files) + len(to_visit_chunk_files)
-    print(f"  State saved to {STATE_FILE} with {total_chunks} chunk files")
+    print(f"  State saved to {STATE_FILE} with {total_chunks} chunk files (took {save_time:.3f}s)")
 
 def load_state():
     """
@@ -87,6 +90,8 @@ def load_state():
     Returns:
         Dictionary with state data, or None if file doesn't exist
     """
+    load_start = time.time()
+    
     state_path = Path(STATE_FILE)
     if not state_path.exists():
         return None
@@ -118,6 +123,9 @@ def load_state():
             # Old format - backward compatibility
             state['visited_urls'] = set(state.get('visited_urls', []))
             state['to_visit_urls'] = set(state.get('to_visit_urls', []))
+        
+        load_time = time.time() - load_start
+        print(f"  State loaded in {load_time:.3f}s")
         
         return state
     except (json.JSONDecodeError, KeyError) as e:
@@ -166,6 +174,7 @@ def extract_urls(html_content: str, base_url: str) -> Set[str]:
     Returns:
         Set of extracted URLs
     """
+    extract_start = time.time()
     urls = set()
     
     # Regex patterns to match URLs in various formats
@@ -187,6 +196,10 @@ def extract_urls(html_content: str, base_url: str) -> Set[str]:
             except ValueError:
                 continue
     
+    extract_time = time.time() - extract_start
+    if extract_time > 0.01:  # Only log if extraction took more than 10ms
+        print(f"    URL extraction took {extract_time:.3f}s")
+    
     return urls
 
 def fetch_url(url: str, timeout: int = 10) -> str:
@@ -200,6 +213,8 @@ def fetch_url(url: str, timeout: int = 10) -> str:
     Returns:
         The fetched content as string
     """
+    fetch_start = time.time()
+    
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Web Scraper Bot)'
@@ -209,17 +224,23 @@ def fetch_url(url: str, timeout: int = 10) -> str:
             content = response.read()
             # Try to decode with common encodings
             try:
-                return content.decode('utf-8')
+                decoded = content.decode('utf-8')
             except UnicodeDecodeError:
                 try:
-                    return content.decode('latin-1')
+                    decoded = content.decode('latin-1')
                 except UnicodeDecodeError:
-                    return content.decode('utf-8', errors='ignore')
+                    decoded = content.decode('utf-8', errors='ignore')
+            
+            fetch_time = time.time() - fetch_start
+            print(f"    Fetched in {fetch_time:.3f}s")
+            return decoded
     except (URLError, HTTPError, socket.timeout) as e:
-        print(f"Error fetching {url}: {e}")
+        fetch_time = time.time() - fetch_start
+        print(f"    Error fetching (took {fetch_time:.3f}s): {e}")
         return ""
     except Exception as e:
-        print(f"Unexpected error fetching {url}: {e}")
+        fetch_time = time.time() - fetch_start
+        print(f"    Unexpected error (took {fetch_time:.3f}s): {e}")
         return ""
 
 def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_interval: int = 10) -> dict:
