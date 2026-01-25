@@ -29,10 +29,10 @@ jobs:
           # Check if state file exists to determine whether to resume
           if [ -f state/scraper_state.json ]; then
             echo "State file found, resuming scraping..."
-            python scraper.py --resume 10000
+            python scraper.py --resume 100000
           else
             echo "No state file found, starting fresh..."
-            python scraper.py --wikipedia 10000
+            python scraper.py --wikipedia 100000
           fi
       
       - name: Configure Git
