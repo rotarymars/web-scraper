@@ -68,7 +68,8 @@ class TestSessionTimeLimit(unittest.TestCase):
         # So let's make this a simpler behavior test
         result = scrape("https://example.com", max_pages=5, resume=True, save_interval=1)
         
-        # Should have stopped at max_pages, not time limit
+        # When resuming, max_pages is added to previous pages_scraped (1 + 5 = 6 total)
+        # Should have stopped at max_pages limit, not time limit
         self.assertLessEqual(result['pages_scraped'], 6,
                             "Scraper should respect max_pages limit")
 
