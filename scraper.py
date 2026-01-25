@@ -13,8 +13,8 @@ from typing import Set, List
 from pathlib import Path
 import glob as file_glob
 
-# Maximum execution time in seconds (6 hours)
-MAX_EXECUTION_TIME = 21600
+# Maximum execution time in seconds (5 hours)
+MAX_EXECUTION_TIME = 18000
 
 # State file for saving and resuming scraper progress
 STATE_FILE = "state/scraper_state.json"
