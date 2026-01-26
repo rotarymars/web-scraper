@@ -37,6 +37,9 @@ def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str,
     """
     save_start = time.time()
     
+    # Ensure state directory exists
+    Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    
     # Clean up old chunk files first
     _cleanup_old_chunks()
     
