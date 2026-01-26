@@ -3,7 +3,7 @@ name: Wikipedia Scraper
 on:
   schedule:
     # Run every 2 hours
-    - cron: '0 */2 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch: # Allow manual triggering
 
 jobs:
@@ -49,6 +49,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: update scraper data [skip ci]"
+            git commit -m "chore: update scraper data"
             git push
           fi
