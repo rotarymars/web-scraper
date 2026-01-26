@@ -2,8 +2,8 @@
   "start_url": "https://example.com",
   "pages_scraped": 3,
   "urls_found": 5,
-  "elapsed_time": 16200.000813245773,
-  "timestamp": 1769382442.9486778,
+  "elapsed_time": 16200.00082063675,
+  "timestamp": 1769429240.539299,
   "visited_urls_chunks": [
     "state/scraper_state_visited_0.json"
   ],
