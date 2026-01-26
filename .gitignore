@@ -36,9 +36,6 @@ ENV/
 # Note: scraper_results.txt and state/scraper_state.json are tracked for CI
 *.log
 
-# State files (runtime only)
-state/
-
 # OS
 .DS_Store
 Thumbs.db
