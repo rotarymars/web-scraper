@@ -1,23 +1,13 @@
 {
-  "start_url": "https://en.wikipedia.org/wiki/Main_Page",
-  "pages_scraped": 29520,
-  "urls_found": 19337578,
-  "elapsed_time": 21600.32656931877,
-  "timestamp": 1769337991.4306133,
+  "start_url": "https://example.com",
+  "pages_scraped": 3,
+  "urls_found": 5,
+  "elapsed_time": 16200.000813245773,
+  "timestamp": 1769382442.9486778,
   "visited_urls_chunks": [
     "state/scraper_state_visited_0.json"
   ],
-  "to_visit_urls_chunks": [
-    "state/scraper_state_to_visit_0.json",
-    "state/scraper_state_to_visit_1.json",
-    "state/scraper_state_to_visit_2.json",
-    "state/scraper_state_to_visit_3.json",
-    "state/scraper_state_to_visit_4.json",
-    "state/scraper_state_to_visit_5.json",
-    "state/scraper_state_to_visit_6.json",
-    "state/scraper_state_to_visit_7.json",
-    "state/scraper_state_to_visit_8.json"
-  ],
-  "visited_urls_count": 29520,
-  "to_visit_urls_count": 4492050
+  "to_visit_urls_chunks": [],
+  "visited_urls_count": 3,
+  "to_visit_urls_count": 0
 }

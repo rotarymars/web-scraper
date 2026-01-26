@@ -315,12 +315,12 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False, save_inte
     
     # Iterative processing instead of recursion
     while to_visit_urls:
-        # Check execution time (session time + any previous elapsed time)
+        # Check execution time (per session, not cumulative across sessions)
         session_elapsed = time.time() - session_start_time
         total_elapsed = original_elapsed + session_elapsed
         
-        if total_elapsed > MAX_EXECUTION_TIME:
-            print(f"\nExecution time limit reached ({total_elapsed:.2f} seconds)")
+        if session_elapsed > MAX_EXECUTION_TIME:
+            print(f"\nSession execution time limit reached ({session_elapsed:.2f} seconds)")
             break
         
         # Check max pages limit
