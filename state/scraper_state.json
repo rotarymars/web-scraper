@@ -1,9 +1,9 @@
 {
   "start_url": "https://en.wikipedia.org/wiki/Main_Page",
-  "pages_scraped": 61824,
-  "urls_found": 39864595,
-  "elapsed_time": 72028.37624645233,
-  "timestamp": 1769536515.722568,
+  "pages_scraped": 72563,
+  "urls_found": 47179865,
+  "elapsed_time": 90032.86560034752,
+  "timestamp": 1769557338.7491305,
   "visited_urls_chunks": [
     "state/scraper_state_visited_0.json"
   ],
@@ -24,8 +24,11 @@
     "state/scraper_state_to_visit_13.json",
     "state/scraper_state_to_visit_14.json",
     "state/scraper_state_to_visit_15.json",
-    "state/scraper_state_to_visit_16.json"
+    "state/scraper_state_to_visit_16.json",
+    "state/scraper_state_to_visit_17.json",
+    "state/scraper_state_to_visit_18.json",
+    "state/scraper_state_to_visit_19.json"
   ],
-  "visited_urls_count": 61824,
-  "to_visit_urls_count": 8353535
+  "visited_urls_count": 72563,
+  "to_visit_urls_count": 9538000
 }
