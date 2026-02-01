@@ -75,7 +75,7 @@ def test_state_persistence():
     
     # Clean up chunk files
     import glob
-    chunk_files = glob.glob("state/scraper_state_*.json")
+    chunk_files = glob.glob("state/scraper_state_*.json") + glob.glob("state/scraper_state_*.zip")
     for chunk_file in chunk_files:
         if os.path.exists(chunk_file):
             os.remove(chunk_file)

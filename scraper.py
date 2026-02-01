@@ -12,6 +12,8 @@ from urllib.error import URLError, HTTPError
 from typing import Set, List
 from pathlib import Path
 import glob as file_glob
+import zipfile
+import io
 
 # Maximum execution time in seconds (5 hours)
 MAX_EXECUTION_TIME = 18000
@@ -21,6 +23,41 @@ STATE_FILE = "state/scraper_state.json"
 
 # Maximum URLs per chunk file (approximately 7-8MB per chunk, well under GitHub's 50MB limit)
 MAX_URLS_PER_CHUNK = 500000
+
+def _save_chunk_to_zip(chunk: List[str], zip_path: str):
+    """
+    Save a chunk of URLs to a ZIP file.
+    
+    Args:
+        chunk: List of URLs to save
+        zip_path: Path to the ZIP file
+    """
+    # Convert to JSON string
+    json_str = json.dumps(chunk)
+    json_bytes = json_str.encode('utf-8')
+    
+    # Write to ZIP file
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('urls.json', json_bytes)
+
+def _load_chunk_from_zip(zip_path: str) -> List[str]:
+    """
+    Load a chunk of URLs from a ZIP file.
+    
+    Args:
+        zip_path: Path to the ZIP file
+        
+    Returns:
+        List of URLs
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            json_bytes = zf.read('urls.json')
+            json_str = json_bytes.decode('utf-8')
+            return json.loads(json_str)
+    except (zipfile.BadZipFile, KeyError) as e:
+        print(f"Error loading ZIP file {zip_path}: {e}")
+        return []
 
 def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str, 
                pages_scraped: int, urls_found: int, elapsed_time: float):
@@ -51,19 +88,17 @@ def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str,
     visited_chunks = _split_into_chunks(visited_list, MAX_URLS_PER_CHUNK)
     to_visit_chunks = _split_into_chunks(to_visit_list, MAX_URLS_PER_CHUNK)
     
-    # Save chunks to separate files
+    # Save chunks to separate ZIP files
     visited_chunk_files = []
     for i, chunk in enumerate(visited_chunks):
-        chunk_file = f"state/scraper_state_visited_{i}.json"
-        with open(chunk_file, 'w') as f:
-            json.dump(chunk, f)
+        chunk_file = f"state/scraper_state_visited_{i}.zip"
+        _save_chunk_to_zip(chunk, chunk_file)
         visited_chunk_files.append(chunk_file)
     
     to_visit_chunk_files = []
     for i, chunk in enumerate(to_visit_chunks):
-        chunk_file = f"state/scraper_state_to_visit_{i}.json"
-        with open(chunk_file, 'w') as f:
-            json.dump(chunk, f)
+        chunk_file = f"state/scraper_state_to_visit_{i}.zip"
+        _save_chunk_to_zip(chunk, chunk_file)
         to_visit_chunk_files.append(chunk_file)
     
     # Save main state with references to chunks
@@ -109,15 +144,23 @@ def load_state():
             visited_urls = []
             for chunk_file in state['visited_urls_chunks']:
                 if Path(chunk_file).exists():
-                    with open(chunk_file, 'r') as f:
-                        visited_urls.extend(json.load(f))
+                    if chunk_file.endswith('.zip'):
+                        visited_urls.extend(_load_chunk_from_zip(chunk_file))
+                    else:
+                        # Backward compatibility with .json files
+                        with open(chunk_file, 'r') as f:
+                            visited_urls.extend(json.load(f))
             
             # Load to_visit URLs from chunks
             to_visit_urls = []
             for chunk_file in state['to_visit_urls_chunks']:
                 if Path(chunk_file).exists():
-                    with open(chunk_file, 'r') as f:
-                        to_visit_urls.extend(json.load(f))
+                    if chunk_file.endswith('.zip'):
+                        to_visit_urls.extend(_load_chunk_from_zip(chunk_file))
+                    else:
+                        # Backward compatibility with .json files
+                        with open(chunk_file, 'r') as f:
+                            to_visit_urls.extend(json.load(f))
             
             # Convert lists back to sets
             state['visited_urls'] = set(visited_urls)
@@ -156,8 +199,13 @@ def _split_into_chunks(items: List[str], chunk_size: int) -> List[List[str]]:
 
 def _cleanup_old_chunks():
     """Remove old chunk files before saving new ones."""
-    # Patterns to match chunk files
-    patterns = ["state/scraper_state_visited_*.json", "state/scraper_state_to_visit_*.json"]
+    # Patterns to match chunk files (both .json and .zip)
+    patterns = [
+        "state/scraper_state_visited_*.json",
+        "state/scraper_state_to_visit_*.json",
+        "state/scraper_state_visited_*.zip",
+        "state/scraper_state_to_visit_*.zip"
+    ]
     
     for pattern in patterns:
         for old_file in file_glob.glob(pattern):
