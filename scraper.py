@@ -26,23 +26,22 @@ MAX_URLS_PER_CHUNK = 500000
 
 def _save_chunk_to_zip(chunk: List[str], zip_path: str):
     """
-    Save a chunk of URLs to a ZIP file.
+    Save a chunk of URLs to a ZIP file using streaming to reduce memory usage.
     
     Args:
         chunk: List of URLs to save
         zip_path: Path to the ZIP file
     """
-    # Convert to JSON string
-    json_str = json.dumps(chunk)
-    json_bytes = json_str.encode('utf-8')
-    
-    # Write to ZIP file
+    # Stream JSON directly into the ZIP entry to avoid large intermediate buffers
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('urls.json', json_bytes)
+        with zf.open('urls.json', 'w') as zip_entry:
+            # Wrap the binary ZIP entry in a text stream for json.dump
+            with io.TextIOWrapper(zip_entry, encoding='utf-8') as text_stream:
+                json.dump(chunk, text_stream)
 
 def _load_chunk_from_zip(zip_path: str) -> List[str]:
     """
-    Load a chunk of URLs from a ZIP file.
+    Load a chunk of URLs from a ZIP file using streaming to reduce memory usage.
     
     Args:
         zip_path: Path to the ZIP file
@@ -52,9 +51,9 @@ def _load_chunk_from_zip(zip_path: str) -> List[str]:
     """
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            json_bytes = zf.read('urls.json')
-            json_str = json_bytes.decode('utf-8')
-            return json.loads(json_str)
+            with zf.open('urls.json') as json_file:
+                with io.TextIOWrapper(json_file, encoding='utf-8') as text_file:
+                    return json.load(text_file)
     except (zipfile.BadZipFile, KeyError) as e:
         print(f"Error loading ZIP file {zip_path}: {e}")
         raise

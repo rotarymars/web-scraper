@@ -6,11 +6,13 @@ import json
 import os
 import glob
 import zipfile
+import io
 from pathlib import Path
 
 def convert_json_to_zip(json_path):
-    """Convert a JSON file to ZIP format."""
-    zip_path = json_path.replace('.json', '.zip')
+    """Convert a JSON file to ZIP format using streaming to reduce memory usage."""
+    # Use Path.with_suffix() for clearer intent
+    zip_path = str(Path(json_path).with_suffix('.zip'))
     
     # Read JSON
     print(f"  Converting {json_path}...")
@@ -20,17 +22,22 @@ def convert_json_to_zip(json_path):
     # Get file sizes
     json_size = os.path.getsize(json_path) / (1024*1024)
     
-    # Write to ZIP
-    json_str = json.dumps(data)
-    json_bytes = json_str.encode('utf-8')
-    
+    # Write to ZIP using streaming to avoid large intermediate buffers
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('urls.json', json_bytes)
+        with zf.open('urls.json', 'w') as zip_entry:
+            # Wrap the binary ZIP entry in a text stream for json.dump
+            with io.TextIOWrapper(zip_entry, encoding='utf-8') as text_stream:
+                json.dump(data, text_stream)
     
     zip_size = os.path.getsize(zip_path) / (1024*1024)
-    compression_ratio = (1 - zip_size / json_size) * 100
     
-    print(f"    JSON: {json_size:.2f} MB -> ZIP: {zip_size:.2f} MB ({compression_ratio:.1f}% saved)")
+    # Handle zero-size JSON files to avoid ZeroDivisionError
+    if json_size == 0:
+        print(f"    JSON: {json_size:.2f} MB -> ZIP: {zip_size:.2f} MB (N/A - empty file)")
+        compression_ratio = 0
+    else:
+        compression_ratio = (1 - zip_size / json_size) * 100
+        print(f"    JSON: {json_size:.2f} MB -> ZIP: {zip_size:.2f} MB ({compression_ratio:.1f}% saved)")
     
     return zip_path, json_size, zip_size
 
@@ -70,7 +77,12 @@ def migrate_state_files():
     print(f"Files converted: {len(converted_files)}")
     print(f"Total size before: {total_json_size:.2f} MB")
     print(f"Total size after: {total_zip_size:.2f} MB")
-    print(f"Space saved: {total_json_size - total_zip_size:.2f} MB ({(1 - total_zip_size/total_json_size)*100:.1f}%)")
+    
+    # Handle zero-size case to avoid ZeroDivisionError
+    if total_json_size == 0:
+        print(f"Space saved: 0.00 MB (N/A - empty files)")
+    else:
+        print(f"Space saved: {total_json_size - total_zip_size:.2f} MB ({(1 - total_zip_size/total_json_size)*100:.1f}%)")
     print()
     
     # Update the main state file to reference .zip files
@@ -80,11 +92,11 @@ def migrate_state_files():
         with open(state_file, 'r') as f:
             state = json.load(f)
         
-        # Update chunk file references
+        # Update chunk file references using Path.with_suffix() for clarity
         if 'visited_urls_chunks' in state:
-            state['visited_urls_chunks'] = [f.replace('.json', '.zip') for f in state['visited_urls_chunks']]
+            state['visited_urls_chunks'] = [str(Path(f).with_suffix('.zip')) for f in state['visited_urls_chunks']]
         if 'to_visit_urls_chunks' in state:
-            state['to_visit_urls_chunks'] = [f.replace('.json', '.zip') for f in state['to_visit_urls_chunks']]
+            state['to_visit_urls_chunks'] = [str(Path(f).with_suffix('.zip')) for f in state['to_visit_urls_chunks']]
         
         with open(state_file, 'w') as f:
             json.dump(state, f, indent=2)
