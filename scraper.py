@@ -268,7 +268,7 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
     session_start = time.monotonic()
 
     print(f"Starting web scraper from: {actual_start_url}")
-    print(f"Max execution time: {MAX_EXECUTION_TIME} seconds ({MAX_EXECUTION_TIME / 3600:.1f} hours)")
+    print(f"Max execution time: {MAX_EXECUTION_TIME} seconds ({MAX_EXECUTION_TIME / 3600:.1f} hour{'s' if MAX_EXECUTION_TIME / 3600 != 1 else ''})")
     print(f"Max pages: {max_pages}")
     print(f"State will be saved every {save_interval} pages")
     print("-" * 80)
