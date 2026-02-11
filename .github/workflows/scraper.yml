@@ -1,0 +1,54 @@
+name: Wikipedia Scraper
+
+on:
+  schedule:
+    # Run every 2 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      
+      - name: Run Wikipedia scraper
+        run: |
+          # Check if state file exists to determine whether to resume
+          if [ -f state/scraper_state.json ]; then
+            echo "State file found, resuming scraping..."
+            python scraper.py --resume 100000
+          else
+            echo "No state file found, starting fresh..."
+            python scraper.py --wikipedia 100000
+          fi
+      
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+      
+      - name: Commit and push results
+        run: |
+          # Add the state and results files (including chunk files)
+          git add state/scraper_state*.json scraper_results.txt
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update scraper data"
+            git push
+          fi
