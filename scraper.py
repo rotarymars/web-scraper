@@ -21,7 +21,7 @@ MAX_EXECUTION_TIME = 18000
 # State file for saving and resuming scraper progress
 STATE_FILE = "state/scraper_state.json"
 
-# Maximum URLs per chunk file (approximately 7-8MB per chunk, well under GitHub's 50MB limit)
+# Maximum URLs per chunk file (approximately 7-8MB per chunk, well under GitHub's 100MB per-file limit)
 MAX_URLS_PER_CHUNK = 500000
 
 def _save_chunk_to_zip(chunk: List[str], zip_path: str):
