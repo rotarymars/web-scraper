@@ -1,0 +1,53 @@
+name: Wikipedia Scraper
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libcurl4-openssl-dev libzip-dev
+
+      - name: Build scraper
+        run: |
+          g++ -std=c++17 -O2 -pthread scraper.cpp -lcurl -lzip -o scraper
+
+      - name: Run scraper
+        run: |
+          if [ -f state/scraper_state.dat ]; then
+            echo "State file found, resuming scraping..."
+            ./scraper --resume 100000 --workers 5
+          else
+            echo "No state file found, starting fresh..."
+            ./scraper --wikipedia 100000 --workers 5
+          fi
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Commit and push results
+        run: |
+          git add state/scraper_state.dat state/scraper_state*.zip scraper_results.txt
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update scraper data"
+            git push
+          fi
