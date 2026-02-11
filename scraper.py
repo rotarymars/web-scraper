@@ -207,7 +207,7 @@ def fetch_url(url: str, timeout: int = 10) -> str:
                 return content.decode('utf-8')
             except UnicodeDecodeError:
                 return content.decode('latin-1')
-    except (URLError, HTTPError, socket.timeout, OSError) as e:
+    except (OSError, socket.timeout) as e:
         print(f"    Error fetching: {e}")
         return ""
     except Exception as e:
