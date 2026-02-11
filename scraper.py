@@ -57,7 +57,7 @@ def _load_chunk_from_zip(zip_path: str) -> List[str]:
             return json.loads(json_str)
     except (zipfile.BadZipFile, KeyError) as e:
         print(f"Error loading ZIP file {zip_path}: {e}")
-        return []
+        raise
 
 def save_state(visited_urls: Set[str], to_visit_urls: Set[str], start_url: str, 
                pages_scraped: int, urls_found: int, elapsed_time: float):
