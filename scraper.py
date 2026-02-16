@@ -216,14 +216,14 @@ def fetch_url(url: str, timeout: int = 10) -> str:
         return ""
 
 
-def _fetch_and_extract(url: str, timeout: int = 10) -> Tuple[str, str, Set[str]]:
-    """Fetch a URL and extract links from it. Returns (url, content, found_urls)."""
+def _fetch_and_extract(url: str, timeout: int = 10) -> Tuple[str, Set[str]]:
+    """Fetch a URL and extract links from it. Returns (content, found_urls)."""
     content = fetch_url(url, timeout)
     if content:
         found_urls = extract_urls(content, url)
     else:
         found_urls = set()
-    return url, content, found_urls
+    return content, found_urls
 
 
 def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
@@ -325,7 +325,7 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
                 total_elapsed = original_elapsed + session_elapsed
 
                 try:
-                    _, content, found_urls = future.result()
+                    content, found_urls = future.result()
                 except Exception as e:
                     print(f"[{pages_scraped}] Error scraping {url}: {e}")
                     continue
@@ -344,7 +344,9 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
                 print(f"  Queue size: {len(to_visit_urls)}, Visited: {len(visited_urls)}")
                 print(f"  Elapsed time: {total_elapsed:.2f}s")
 
-            if pages_scraped % save_interval < len(batch):
+            # Save state if we crossed a save_interval boundary during this batch
+            pages_before_batch = pages_scraped - len(batch)
+            if pages_before_batch // save_interval != pages_scraped // save_interval:
                 save_state(visited_urls, to_visit_urls, actual_start_url,
                            pages_scraped, urls_found,
                            original_elapsed + (time.monotonic() - session_start))
@@ -410,7 +412,14 @@ def main():
     i = 0
     while i < len(argv):
         if argv[i] == '--workers' and i + 1 < len(argv):
-            num_workers = int(argv[i + 1])
+            try:
+                num_workers = int(argv[i + 1])
+                if num_workers < 1:
+                    print("Error: --workers must be a positive integer")
+                    sys.exit(1)
+            except ValueError:
+                print(f"Error: --workers requires a positive integer, got '{argv[i + 1]}'")
+                sys.exit(1)
             i += 2
         elif argv[i].isdigit():
             max_pages = int(argv[i])
