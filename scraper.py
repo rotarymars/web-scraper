@@ -215,8 +215,7 @@ def fetch_url(url: str, timeout: int = 10) -> str:
         return ""
 
 
-def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
-           save_interval: int = 10) -> dict:
+def scrape(start_url: str, max_pages: int = 100, resume: bool = False) -> dict:
     """
     Scrape URLs starting from a single URL, using iterative processing.
 
@@ -225,7 +224,6 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
         max_pages: Maximum number of pages to scrape. When resuming, this is
                    treated as additional pages to scrape (not absolute limit)
         resume: Whether to resume from saved state
-        save_interval: Save state every N pages (default: 10)
 
     Returns:
         Dictionary with scraping statistics
@@ -270,7 +268,6 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
     print(f"Starting web scraper from: {actual_start_url}")
     print(f"Max execution time: {MAX_EXECUTION_TIME} seconds ({MAX_EXECUTION_TIME / 3600:.1f} hour{'s' if MAX_EXECUTION_TIME / 3600 != 1 else ''})")
     print(f"Max pages: {max_pages}")
-    print(f"State will be saved every {save_interval} pages")
     print("-" * 80)
 
     if resume and not to_visit_urls:
@@ -313,10 +310,6 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
         print(f"  Found {len(found_urls)} URLs ({len(new_urls)} new)")
         print(f"  Queue size: {len(to_visit_urls)}, Visited: {len(visited_urls)}")
         print(f"  Elapsed time: {total_elapsed:.2f}s")
-
-        if pages_scraped % save_interval == 0:
-            save_state(visited_urls, to_visit_urls, actual_start_url,
-                       pages_scraped, urls_found, total_elapsed)
 
     session_elapsed = time.monotonic() - session_start
     total_time = original_elapsed + session_elapsed
