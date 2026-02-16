@@ -15,6 +15,9 @@ python scraper.py --wikipedia 50
 
 # Scrape 200 pages
 python scraper.py --wikipedia 200
+
+# Scrape with 10 parallel workers for faster performance
+python scraper.py --wikipedia 200 --workers 10
 ```
 
 ### Resume Scraping

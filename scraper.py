@@ -11,9 +11,10 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import islice
 from pathlib import Path
-from typing import Iterator, List, Optional, Set
+from typing import Iterator, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 
 # Maximum execution time in seconds (5 hours)
@@ -215,10 +216,20 @@ def fetch_url(url: str, timeout: int = 10) -> str:
         return ""
 
 
+def _fetch_and_extract(url: str, timeout: int = 10) -> Tuple[str, str, Set[str]]:
+    """Fetch a URL and extract links from it. Returns (url, content, found_urls)."""
+    content = fetch_url(url, timeout)
+    if content:
+        found_urls = extract_urls(content, url)
+    else:
+        found_urls = set()
+    return url, content, found_urls
+
+
 def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
-           save_interval: int = 10) -> dict:
+           save_interval: int = 10, num_workers: int = 5) -> dict:
     """
-    Scrape URLs starting from a single URL, using iterative processing.
+    Scrape URLs starting from a single URL, using parallel processing.
 
     Args:
         start_url: The initial URL to start scraping from
@@ -226,6 +237,7 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
                    treated as additional pages to scrape (not absolute limit)
         resume: Whether to resume from saved state
         save_interval: Save state every N pages (default: 10)
+        num_workers: Number of parallel worker threads (default: 5)
 
     Returns:
         Dictionary with scraping statistics
@@ -270,6 +282,7 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
     print(f"Starting web scraper from: {actual_start_url}")
     print(f"Max execution time: {MAX_EXECUTION_TIME} seconds ({MAX_EXECUTION_TIME / 3600:.1f} hour{'s' if MAX_EXECUTION_TIME / 3600 != 1 else ''})")
     print(f"Max pages: {max_pages}")
+    print(f"Workers: {num_workers}")
     print(f"State will be saved every {save_interval} pages")
     print("-" * 80)
 
@@ -279,44 +292,62 @@ def scrape(start_url: str, max_pages: int = 100, resume: bool = False,
         print("Scraping cannot continue without URLs in the queue.")
         print("-" * 80)
 
-    while to_visit_urls:
-        session_elapsed = time.monotonic() - session_start
-        if session_elapsed > MAX_EXECUTION_TIME:
-            print(f"\nSession execution time limit reached ({session_elapsed:.2f} seconds)")
-            break
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        while to_visit_urls:
+            session_elapsed = time.monotonic() - session_start
+            if session_elapsed > MAX_EXECUTION_TIME:
+                print(f"\nSession execution time limit reached ({session_elapsed:.2f} seconds)")
+                break
 
-        if pages_scraped >= max_pages:
-            print(f"\nMax pages limit reached ({pages_scraped} pages)")
-            break
+            if pages_scraped >= max_pages:
+                print(f"\nMax pages limit reached ({pages_scraped} pages)")
+                break
 
-        current_url = to_visit_urls.pop()
+            # Collect a batch of URLs to fetch in parallel
+            batch = []
+            while to_visit_urls and len(batch) < num_workers and pages_scraped + len(batch) < max_pages:
+                url = to_visit_urls.pop()
+                if url in visited_urls:
+                    continue
+                visited_urls.add(url)
+                batch.append(url)
 
-        if current_url in visited_urls:
-            continue
+            if not batch:
+                continue
 
-        visited_urls.add(current_url)
-        pages_scraped += 1
-        total_elapsed = original_elapsed + session_elapsed
+            # Submit all fetches in parallel
+            futures = {executor.submit(_fetch_and_extract, url): url for url in batch}
 
-        print(f"[{pages_scraped}] Scraping: {current_url}")
+            for future in as_completed(futures):
+                url = futures[future]
+                pages_scraped += 1
+                session_elapsed = time.monotonic() - session_start
+                total_elapsed = original_elapsed + session_elapsed
 
-        content = fetch_url(current_url)
-        if not content:
-            continue
+                try:
+                    _, content, found_urls = future.result()
+                except Exception as e:
+                    print(f"[{pages_scraped}] Error scraping {url}: {e}")
+                    continue
 
-        found_urls = extract_urls(content, current_url)
-        urls_found += len(found_urls)
+                if not content:
+                    print(f"[{pages_scraped}] Scraping: {url}")
+                    print(f"  (no content)")
+                    continue
 
-        new_urls = found_urls - visited_urls
-        to_visit_urls.update(new_urls)
+                urls_found += len(found_urls)
+                new_urls = found_urls - visited_urls
+                to_visit_urls.update(new_urls)
 
-        print(f"  Found {len(found_urls)} URLs ({len(new_urls)} new)")
-        print(f"  Queue size: {len(to_visit_urls)}, Visited: {len(visited_urls)}")
-        print(f"  Elapsed time: {total_elapsed:.2f}s")
+                print(f"[{pages_scraped}] Scraping: {url}")
+                print(f"  Found {len(found_urls)} URLs ({len(new_urls)} new)")
+                print(f"  Queue size: {len(to_visit_urls)}, Visited: {len(visited_urls)}")
+                print(f"  Elapsed time: {total_elapsed:.2f}s")
 
-        if pages_scraped % save_interval == 0:
-            save_state(visited_urls, to_visit_urls, actual_start_url,
-                       pages_scraped, urls_found, total_elapsed)
+            if pages_scraped % save_interval < len(batch):
+                save_state(visited_urls, to_visit_urls, actual_start_url,
+                           pages_scraped, urls_found,
+                           original_elapsed + (time.monotonic() - session_start))
 
     session_elapsed = time.monotonic() - session_start
     total_time = original_elapsed + session_elapsed
@@ -354,13 +385,14 @@ def main():
     show_help = bool(args & {'-h', '--help'})
 
     if show_help:
-        print("Usage: python scraper.py [url|--wikipedia] [max_pages] [--resume]")
+        print("Usage: python scraper.py [url|--wikipedia] [max_pages] [--resume] [--workers N]")
         print()
         print("Arguments:")
         print("  url                URL to start scraping from")
         print("  --wikipedia, -w    Start scraping from Wikipedia main page")
         print("  max_pages          Maximum number of pages to scrape (default: 100)")
         print("  --resume           Resume from saved state")
+        print("  --workers N        Number of parallel worker threads (default: 5)")
         print("  --help, -h         Show this help message")
         print()
         print("Examples:")
@@ -369,13 +401,22 @@ def main():
         print("  python scraper.py https://example.com 100")
         print("  python scraper.py https://example.com 50 --resume")
         print("  python scraper.py --resume")
+        print("  python scraper.py --wikipedia 50 --workers 10")
         sys.exit(0)
 
     max_pages = 100
-    for arg in sys.argv[1:]:
-        if arg.isdigit():
-            max_pages = int(arg)
-            break
+    num_workers = 5
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--workers' and i + 1 < len(argv):
+            num_workers = int(argv[i + 1])
+            i += 2
+        elif argv[i].isdigit():
+            max_pages = int(argv[i])
+            i += 1
+        else:
+            i += 1
 
     start_url = ""
     if use_wikipedia:
@@ -409,7 +450,7 @@ def main():
             print("Error: URL must start with http:// or https://")
             sys.exit(1)
 
-    results = scrape(start_url, max_pages, resume=resume)
+    results = scrape(start_url, max_pages, resume=resume, num_workers=num_workers)
 
     output_file = "scraper_results.txt"
     with open(output_file, 'w') as f:
