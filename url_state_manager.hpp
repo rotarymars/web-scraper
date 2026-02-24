@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -142,6 +143,22 @@ public:
             throw std::runtime_error("Iterator error: " + it->status().ToString());
         }
         return result;
+    }
+
+    /// Invoke fn(url) for every URL that has the given state.
+    /// Uses a RocksDB iterator and never loads all URLs into memory at once.
+    void forEachUrlByState(UrlState state,
+                           const std::function<void(const std::string&)>& fn) const {
+        std::string target = stateToValue(state);
+        std::unique_ptr<rocksdb::Iterator> it(
+            db_->NewIterator(rocksdb::ReadOptions()));
+        for (it->SeekToFirst(); it->Valid(); it->Next()) {
+            if (it->value().ToString() == target)
+                fn(it->key().ToString());
+        }
+        if (!it->status().ok())
+            throw std::runtime_error("forEachUrlByState iterator error: " +
+                                     it->status().ToString());
     }
 
     /// Bulk import URLs with a given state using WriteBatch for efficiency.

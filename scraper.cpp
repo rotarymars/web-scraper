@@ -17,7 +17,6 @@
 #include <future>
 #include <iostream>
 #include <mutex>
-#include <optional>
 #include <queue>
 #include <regex>
 #include <sstream>
@@ -190,100 +189,6 @@ static void cleanupOldChunks() {
 //   visited_chunk  <path>       (repeated)
 //   to_visit_chunk <path>       (repeated)
 
-static void saveState(const UrlSet&      visited,
-                      const UrlSet&      toVisit,
-                      const std::string& startUrl,
-                      int                pagesScraped,
-                      int                urlsFound,
-                      double             elapsedTime) {
-    auto t0 = std::chrono::steady_clock::now();
-    fs::create_directories(STATE_DIR);
-    cleanupOldChunks();
-
-    auto writeChunks = [&](const UrlSet& urls, const std::string& prefix) {
-        std::vector<std::string> list(urls.begin(), urls.end());
-        std::vector<std::string> files;
-        for (size_t i = 0, offset = 0; offset < list.size(); offset += MAX_URLS_PER_CHUNK, ++i) {
-            size_t                   end   = std::min(offset + MAX_URLS_PER_CHUNK, list.size());
-            std::vector<std::string> chunk(list.begin() + offset, list.begin() + end);
-            std::string              path  = (STATE_DIR / (prefix + std::to_string(i) + ".zip")).string();
-            saveChunkToZip(chunk, path);
-            files.push_back(path);
-        }
-        return files;
-    };
-
-    auto visitedFiles = writeChunks(visited, "scraper_state_visited_");
-    auto toVisitFiles = writeChunks(toVisit, "scraper_state_to_visit_");
-
-    std::ofstream f(STATE_FILE);
-    f << "start_url "     << startUrl     << '\n'
-      << "pages_scraped " << pagesScraped << '\n'
-      << "urls_found "    << urlsFound    << '\n'
-      << "elapsed_time "  << std::fixed   << elapsedTime << '\n';
-    for (const auto& p : visitedFiles)  f << "visited_chunk "  << p << '\n';
-    for (const auto& p : toVisitFiles)  f << "to_visit_chunk " << p << '\n';
-
-    double took        = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - t0).count();
-    int    totalChunks = static_cast<int>(visitedFiles.size() + toVisitFiles.size());
-    std::cout << "  State saved to " << STATE_FILE
-              << " with " << totalChunks << " chunk files"
-              << " (took " << took << "s)\n";
-}
-
-struct LoadedState {
-    std::string startUrl;
-    int         pagesScraped = 0;
-    int         urlsFound    = 0;
-    double      elapsedTime  = 0.0;
-    UrlSet      visited;
-    UrlSet      toVisit;
-};
-
-static std::optional<LoadedState> loadState() {
-    auto t0 = std::chrono::steady_clock::now();
-    if (!fs::exists(STATE_FILE)) return std::nullopt;
-
-    try {
-        std::ifstream f(STATE_FILE);
-        if (!f) throw std::runtime_error("cannot open state file");
-
-        LoadedState      s;
-        std::string      line;
-        while (std::getline(f, line)) {
-            if (line.empty()) continue;
-            auto sp = line.find(' ');
-            if (sp == std::string::npos) continue;
-            std::string key = line.substr(0, sp);
-            std::string val = line.substr(sp + 1);
-
-            if      (key == "start_url")     s.startUrl     = val;
-            else if (key == "pages_scraped") s.pagesScraped = std::stoi(val);
-            else if (key == "urls_found")    s.urlsFound    = std::stoi(val);
-            else if (key == "elapsed_time")  s.elapsedTime  = std::stod(val);
-            else if (key == "visited_chunk") {
-                if (!fs::exists(val)) continue;
-                auto chunk = loadChunkFromZip(val);
-                s.visited.insert(chunk.begin(), chunk.end());
-            }
-            else if (key == "to_visit_chunk") {
-                if (!fs::exists(val)) continue;
-                auto chunk = loadChunkFromZip(val);
-                s.toVisit.insert(chunk.begin(), chunk.end());
-            }
-        }
-
-        double took = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - t0).count();
-        std::cout << "  State loaded in " << took << "s\n";
-        return s;
-    } catch (const std::exception& e) {
-        std::cerr << "Error loading state: " << e.what() << '\n';
-        return std::nullopt;
-    }
-}
-
 // ── URL utilities ─────────────────────────────────────────────────────────────
 
 static std::string resolveUrl(const std::string& base, const std::string& rel) {
@@ -413,28 +318,62 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
     size_t      visitedCount    = 0;
 
     if (resume) {
-        // Import legacy ZIP state into RocksDB for backward compatibility
-        auto state = loadState();
-        if (state) {
-            std::vector<std::string> visitedVec(state->visited.begin(),
-                                                 state->visited.end());
-            std::vector<std::string> toVisitVec(state->toVisit.begin(),
-                                                 state->toVisit.end());
-            urlMgr.bulkImport(visitedVec, UrlState::COMPLETED);
-            urlMgr.bulkImport(toVisitVec, UrlState::DISCOVERED);
+        if (fs::exists(STATE_FILE)) {
+            auto tResume = std::chrono::steady_clock::now();
+            std::ifstream sf(STATE_FILE);
+            if (!sf) throw std::runtime_error("cannot open state file");
 
-            pagesScraped    = state->pagesScraped;
-            urlsFound       = state->urlsFound;
-            originalElapsed = state->elapsedTime;
-            actualStartUrl  = state->startUrl;
-            visitedCount    = state->visited.size();
-            maxPages        = pagesScraped + maxPages;
+            size_t importedVisited = 0, importedToVisit = 0;
+            size_t chunkV = 0, chunkT = 0;
 
-            std::cout << "Resuming from saved state...\n"
-                      << "  Previous start URL: "    << state->startUrl     << '\n'
-                      << "  Pages already scraped: " << state->pagesScraped << '\n'
-                      << "  URLs in queue: "         << state->toVisit.size() << '\n'
-                      << "  URLs visited: "          << state->visited.size() << '\n'
+            std::cout << "Resuming from saved state: " << STATE_FILE << '\n'
+                      << std::string(80, '-') << '\n';
+
+            std::string line;
+            while (std::getline(sf, line)) {
+                if (line.empty()) continue;
+                auto sp = line.find(' ');
+                if (sp == std::string::npos) continue;
+                std::string key = line.substr(0, sp);
+                std::string val = line.substr(sp + 1);
+
+                if      (key == "start_url")     actualStartUrl  = val;
+                else if (key == "pages_scraped") pagesScraped    = std::stoi(val);
+                else if (key == "urls_found")    urlsFound       = std::stoi(val);
+                else if (key == "elapsed_time")  originalElapsed = std::stod(val);
+                else if (key == "visited_chunk") {
+                    if (!fs::exists(val)) continue;
+                    std::cout << "  [visited chunk " << chunkV << "] Loading " << val << " ...\n";
+                    auto chunk = loadChunkFromZip(val);
+                    std::cout << "    " << chunk.size() << " URLs read from zip\n";
+                    size_t n = urlMgr.bulkImport(chunk, UrlState::COMPLETED);
+                    importedVisited += n;
+                    std::cout << "    " << n << " URLs imported into RocksDB\n";
+                    ++chunkV;
+                }
+                else if (key == "to_visit_chunk") {
+                    if (!fs::exists(val)) continue;
+                    std::cout << "  [to-visit chunk " << chunkT << "] Loading " << val << " ...\n";
+                    auto chunk = loadChunkFromZip(val);
+                    std::cout << "    " << chunk.size() << " URLs read from zip\n";
+                    size_t n = urlMgr.bulkImport(chunk, UrlState::DISCOVERED);
+                    importedToVisit += n;
+                    std::cout << "    " << n << " URLs imported into RocksDB\n";
+                    ++chunkT;
+                }
+            }
+
+            visitedCount = importedVisited;
+            maxPages     = pagesScraped + maxPages;
+
+            double took = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - tResume).count();
+            std::cout << std::string(80, '-') << '\n'
+                      << "  Previous start URL: "     << actualStartUrl  << '\n'
+                      << "  Pages already scraped: "  << pagesScraped    << '\n'
+                      << "  URLs imported to queue: " << importedToVisit << '\n'
+                      << "  URLs visited: "           << importedVisited << '\n'
+                      << "  State imported in "       << took            << "s\n"
                       << std::string(80, '-') << '\n'
                       << "  Will scrape up to " << maxPages
                       << " total pages (continuing from " << pagesScraped << ")\n";
@@ -544,19 +483,73 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
     double totalTime = originalElapsed + elapsed();
 
     // Export state to legacy ZIP format for backward compatibility and git storage
-    size_t finalQueueSize;
+    size_t finalQueueSize = 0;
     {
-        auto completedUrls  = urlMgr.getUrlsByState(UrlState::COMPLETED);
-        auto discoveredUrls = urlMgr.getUrlsByState(UrlState::DISCOVERED);
+        auto tSave = std::chrono::steady_clock::now();
+        fs::create_directories(STATE_DIR);
+        cleanupOldChunks();
 
-        UrlSet visitedSet(completedUrls.begin(), completedUrls.end());
-        UrlSet toVisitSet(discoveredUrls.begin(), discoveredUrls.end());
+        // Stream URLs from RocksDB into zip chunks one chunk at a time,
+        // never holding more than MAX_URLS_PER_CHUNK URLs in memory at once.
+        auto writeChunksStreaming = [&](UrlState state, const std::string& prefix,
+                                        const std::string& label)
+                -> std::pair<std::vector<std::string>, size_t> {
+            std::vector<std::string> files;
+            std::vector<std::string> batch;
+            batch.reserve(MAX_URLS_PER_CHUNK);
+            size_t chunkIdx = 0;
+            size_t totalUrls = 0;
 
-        saveState(visitedSet, toVisitSet, actualStartUrl,
-                  pagesScraped, urlsFound, totalTime);
+            auto flush = [&]() {
+                if (batch.empty()) return;
+                std::string path =
+                    (STATE_DIR / (prefix + std::to_string(chunkIdx) + ".zip")).string();
+                std::cout << "  [" << label << " chunk " << chunkIdx << "] Writing "
+                          << batch.size() << " URLs -> " << path << " ...\n";
+                saveChunkToZip(batch, path);
+                std::cout << "    Done\n";
+                totalUrls += batch.size();
+                files.push_back(std::move(path));
+                ++chunkIdx;
+                batch.clear();
+            };
 
-        visitedCount   = visitedSet.size();
-        finalQueueSize = toVisitSet.size();
+            urlMgr.forEachUrlByState(state, [&](const std::string& url) {
+                batch.push_back(url);
+                if (batch.size() >= MAX_URLS_PER_CHUNK) flush();
+            });
+            flush();
+
+            std::cout << "  Total: " << totalUrls << " URLs across "
+                      << files.size() << " chunk(s)\n";
+            return {std::move(files), totalUrls};
+        };
+
+        std::cout << "Saving visited URLs (COMPLETED) to zip chunks...\n";
+        auto [visitedFiles, visitedTotal] =
+            writeChunksStreaming(UrlState::COMPLETED, "scraper_state_visited_", "visited");
+        visitedCount = visitedTotal;
+
+        std::cout << "Saving to-visit URLs (DISCOVERED) to zip chunks...\n";
+        auto [toVisitFiles, toVisitTotal] =
+            writeChunksStreaming(UrlState::DISCOVERED, "scraper_state_to_visit_", "to-visit");
+        finalQueueSize = toVisitTotal;
+
+        std::ofstream f(STATE_FILE);
+        f << "start_url "     << actualStartUrl << '\n'
+          << "pages_scraped " << pagesScraped   << '\n'
+          << "urls_found "    << urlsFound      << '\n'
+          << "elapsed_time "  << std::fixed     << totalTime << '\n';
+        for (const auto& p : visitedFiles)  f << "visited_chunk "  << p << '\n';
+        for (const auto& p : toVisitFiles)  f << "to_visit_chunk " << p << '\n';
+
+        double took = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - tSave).count();
+        int totalChunks =
+            static_cast<int>(visitedFiles.size() + toVisitFiles.size());
+        std::cout << "  State saved to " << STATE_FILE
+                  << " with " << totalChunks << " chunk files"
+                  << " (took " << took << "s)\n";
     }
 
     std::cout << std::string(80, '-') << '\n'
