@@ -54,9 +54,16 @@ public:
     /// If the directory already exists, it is opened; otherwise it is created.
     /// On startup the database integrity is verified.
     explicit UrlStateManager(const std::string& dbPath)
+        : UrlStateManager(dbPath, /*autoVerify=*/true) {}
+
+    /// Open or create a RocksDB database at `dbPath`, with optional
+    /// startup integrity verification controlled by `autoVerify`.
+    explicit UrlStateManager(const std::string& dbPath, bool autoVerify)
         : dbPath_(dbPath) {
         openDatabase();
-        verifyIntegrity();
+        if (autoVerify) {
+            verifyIntegrity();
+        }
     }
 
     ~UrlStateManager() {
