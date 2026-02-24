@@ -92,7 +92,7 @@ public:
         if (!s.IsNotFound())
             throw std::runtime_error("checkAndSet Get failed: " + s.ToString());
 
-        s = db_->Put(rocksdb::WriteOptions(), url, stateToValue(state));
+        s = db_->Put(syncWriteOpts(), url, stateToValue(state));
         if (!s.ok())
             throw std::runtime_error("checkAndSet Put failed: " + s.ToString());
         return true;
@@ -101,7 +101,7 @@ public:
     /// Set (or overwrite) the state for a URL.
     /// RocksDB Put is natively thread-safe; no mutex needed.
     void setState(const std::string& url, UrlState state) {
-        auto s = db_->Put(rocksdb::WriteOptions(), url, stateToValue(state));
+        auto s = db_->Put(syncWriteOpts(), url, stateToValue(state));
         if (!s.ok())
             throw std::runtime_error("setState failed: " + s.ToString());
     }
@@ -207,13 +207,27 @@ private:
         return std::string(1, static_cast<char>(s));
     }
 
+    /// Convert a stored byte back to UrlState.
+    /// Requires the enum to be sequential from 0 (DISCOVERED) to 3 (FAILED).
     static UrlState valueToState(const std::string& v) {
+        static_assert(static_cast<std::uint8_t>(UrlState::DISCOVERED) == 0);
+        static_assert(static_cast<std::uint8_t>(UrlState::CRAWLING)   == 1);
+        static_assert(static_cast<std::uint8_t>(UrlState::COMPLETED)  == 2);
+        static_assert(static_cast<std::uint8_t>(UrlState::FAILED)     == 3);
+
         if (v.empty())
             throw std::runtime_error("valueToState: empty value");
         auto raw = static_cast<std::uint8_t>(v[0]);
         if (raw > static_cast<std::uint8_t>(UrlState::FAILED))
             throw std::runtime_error("valueToState: invalid state value");
         return static_cast<UrlState>(raw);
+    }
+
+    /// Return WriteOptions with sync=true for WAL durability.
+    static rocksdb::WriteOptions syncWriteOpts() {
+        rocksdb::WriteOptions wo;
+        wo.sync = true;
+        return wo;
     }
 
     std::string                    dbPath_;
