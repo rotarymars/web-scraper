@@ -41,3 +41,4 @@ ENV/
 Thumbs.db
 
 scraper
+url_state_manager_test
