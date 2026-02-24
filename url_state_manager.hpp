@@ -124,6 +124,9 @@ public:
             if (it->value().ToString() == target)
                 result.emplace_back(it->key().ToString());
         }
+        if (!it->status().ok()) {
+            throw std::runtime_error("Iterator error: " + it->status().ToString());
+        }
         return result;
     }
 
