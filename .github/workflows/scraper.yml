@@ -21,11 +21,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev libzip-dev
+          sudo apt-get install -y libcurl4-openssl-dev libzip-dev librocksdb-dev
 
       - name: Build scraper
         run: |
-          g++ -std=c++17 -O2 -pthread scraper.cpp -lcurl -lzip -o scraper
+          g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lzip -lrocksdb -o scraper
+
+      - name: Build and test URL state manager
+        run: |
+          g++ -std=c++23 -O2 -Wall -pthread url_state_manager_test.cpp -lrocksdb -o url_state_manager_test
+          ./url_state_manager_test
 
       - name: Run scraper
         run: |
