@@ -136,6 +136,9 @@ void test_seal_and_checkpoint() {
     {
         UrlStateManager mgr(TEST_DB);
         mgr.checkAndSet("http://seal.com", UrlState::COMPLETED);
+        // First explicit seal should create the checkpoint.
+        mgr.seal();
+        // Second explicit seal should be safe/idempotent and not create a duplicate checkpoint.
         mgr.seal();
         assert(fs::is_directory(TEST_DB + "_checkpoint"));
     }
