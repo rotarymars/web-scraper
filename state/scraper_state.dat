@@ -1,7 +1,7 @@
 start_url https://en.wikipedia.org/wiki/Main_Page
-pages_scraped 384284
-urls_found 254235985
-elapsed_time 775999.539798
+pages_scraped 484284
+urls_found 256160589
+elapsed_time 784444.894348
 visited_chunk state/scraper_state_visited_0.zip
 visited_chunk state/scraper_state_visited_1.zip
 to_visit_chunk state/scraper_state_to_visit_0.zip
@@ -72,3 +72,4 @@ to_visit_chunk state/scraper_state_to_visit_64.zip
 to_visit_chunk state/scraper_state_to_visit_65.zip
 to_visit_chunk state/scraper_state_to_visit_66.zip
 to_visit_chunk state/scraper_state_to_visit_67.zip
+to_visit_chunk state/scraper_state_to_visit_68.zip
