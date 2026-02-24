@@ -24,7 +24,6 @@
 #include <rocksdb/options.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/checkpoint.h>
-#include <rocksdb/utilities/backup_engine.h>
 
 namespace fs = std::filesystem;
 
