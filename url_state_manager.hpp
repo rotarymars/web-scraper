@@ -78,8 +78,9 @@ public:
 
     /// Thread-safe check-and-set: if the URL does not exist, insert it with
     /// the given state and return true.  If it already exists, return false.
+    /// This is the only operation requiring a mutex (compound Get + Put).
     bool checkAndSet(const std::string& url, UrlState state) {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::lock_guard<std::mutex> lock(checkAndSetMu_);
         std::string existing;
         rocksdb::Status s = db_->Get(rocksdb::ReadOptions(), url, &existing);
         if (s.ok()) return false;           // already present
@@ -93,16 +94,16 @@ public:
     }
 
     /// Set (or overwrite) the state for a URL.
+    /// RocksDB Put is natively thread-safe; no mutex needed.
     void setState(const std::string& url, UrlState state) {
-        std::lock_guard<std::mutex> lock(mu_);
         auto s = db_->Put(rocksdb::WriteOptions(), url, stateToValue(state));
         if (!s.ok())
             throw std::runtime_error("setState failed: " + s.ToString());
     }
 
     /// Retrieve the state for a URL.  Returns false if the URL is not found.
+    /// RocksDB Get is natively thread-safe; no mutex needed.
     [[nodiscard]] bool getState(const std::string& url, UrlState& out) const {
-        std::lock_guard<std::mutex> lock(mu_);
         std::string value;
         auto s = db_->Get(rocksdb::ReadOptions(), url, &value);
         if (s.IsNotFound()) return false;
@@ -113,16 +114,16 @@ public:
     }
 
     /// Check whether a URL exists in the database.
+    /// RocksDB Get is natively thread-safe; no mutex needed.
     [[nodiscard]] bool exists(const std::string& url) const {
-        std::lock_guard<std::mutex> lock(mu_);
         std::string value;
         auto s = db_->Get(rocksdb::ReadOptions(), url, &value);
         return s.ok();
     }
 
     /// Return all URLs that have a given state.
+    /// RocksDB iterators are thread-safe; no mutex needed.
     [[nodiscard]] std::vector<std::string> getUrlsByState(UrlState state) const {
-        std::lock_guard<std::mutex> lock(mu_);
         std::vector<std::string> result;
         std::string target = stateToValue(state);
         std::unique_ptr<rocksdb::Iterator> it(
@@ -142,7 +143,7 @@ public:
     /// Seal the database by creating a RocksDB Checkpoint.
     /// The checkpoint directory is `<dbPath>_checkpoint`.
     void seal() {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::lock_guard<std::mutex> lock(sealMu_);
         if (!db_) return;
 
         std::string cpDir = dbPath_ + "_checkpoint";
@@ -165,8 +166,8 @@ public:
     }
 
     /// Verify database integrity using VerifyChecksum.
+    /// RocksDB VerifyChecksum is thread-safe; no mutex needed.
     void verifyIntegrity() {
-        std::lock_guard<std::mutex> lock(mu_);
         auto s = db_->VerifyChecksum();
         if (!s.ok())
             throw std::runtime_error("Integrity check failed: " + s.ToString());
@@ -216,5 +217,6 @@ private:
 
     std::string        dbPath_;
     rocksdb::DB*       db_ = nullptr;
-    mutable std::mutex mu_;
+    std::mutex         checkAndSetMu_;  // only for atomic check-and-set
+    std::mutex         sealMu_;         // only for seal() filesystem operations
 };

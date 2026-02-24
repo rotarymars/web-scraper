@@ -10,6 +10,7 @@
 
 #include "url_state_manager.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <filesystem>
 #include <iostream>
