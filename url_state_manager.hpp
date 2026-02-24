@@ -147,9 +147,10 @@ public:
 
     /// Seal the database by creating a RocksDB Checkpoint.
     /// The checkpoint directory is `<dbPath>_checkpoint`.
+    /// Idempotent: subsequent calls after the first are no-ops.
     void seal() {
         std::lock_guard<std::mutex> lock(sealMu_);
-        if (!db_) return;
+        if (!db_ || sealed_) return;
 
         std::string cpDir = dbPath_ + "_checkpoint";
 
@@ -166,6 +167,8 @@ public:
         s = cp->CreateCheckpoint(cpDir);
         if (!s.ok())
             throw std::runtime_error("CreateCheckpoint failed: " + s.ToString());
+
+        sealed_ = true;
     }
 
     /// Verify database integrity using VerifyChecksum.
@@ -217,4 +220,5 @@ private:
     std::unique_ptr<rocksdb::DB>   db_;
     std::mutex                     checkAndSetMu_;  // only for atomic check-and-set
     std::mutex                     sealMu_;         // only for seal() filesystem operations
+    bool                           sealed_ = false;
 };
