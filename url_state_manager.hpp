@@ -12,7 +12,7 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <iostream>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -63,12 +63,10 @@ public:
         try {
             seal();
         } catch (const std::exception& e) {
-            std::cerr << "UrlStateManager destructor: seal() failed: "
-                      << e.what() << '\n';
+            // Cannot propagate from destructor; silently handle.
         } catch (...) {
-            std::cerr << "UrlStateManager destructor: seal() threw an unknown exception\n";
+            // Cannot propagate from destructor; silently handle.
         }
-        delete db_;
     }
 
     UrlStateManager(const UrlStateManager&)            = delete;
@@ -153,7 +151,7 @@ public:
         fs::remove_all(cpDir, ec);
 
         rocksdb::Checkpoint* rawCp = nullptr;
-        auto s = rocksdb::Checkpoint::Create(db_, &rawCp);
+        auto s = rocksdb::Checkpoint::Create(db_.get(), &rawCp);
         if (!s.ok())
             throw std::runtime_error("Checkpoint::Create failed: " + s.ToString());
         std::unique_ptr<rocksdb::Checkpoint> cp(rawCp);
@@ -161,8 +159,6 @@ public:
         s = cp->CreateCheckpoint(cpDir);
         if (!s.ok())
             throw std::runtime_error("CreateCheckpoint failed: " + s.ToString());
-
-        std::cout << "  Database sealed (checkpoint at " << cpDir << ")\n";
     }
 
     /// Verify database integrity using VerifyChecksum.
@@ -171,7 +167,6 @@ public:
         auto s = db_->VerifyChecksum();
         if (!s.ok())
             throw std::runtime_error("Integrity check failed: " + s.ToString());
-        std::cout << "  Database integrity verified.\n";
     }
 
     /// Return the underlying database path.
@@ -191,15 +186,11 @@ private:
             rocksdb::NewBlockBasedTableFactory(tableOpts));
         opts.create_if_missing = true;
 
-        bool dirExists = fs::is_directory(dbPath_);
-        std::cout << (dirExists ? "  Opening existing" : "  Creating new")
-                  << " database at " << dbPath_ << '\n';
-
         rocksdb::DB* raw = nullptr;
         auto s = rocksdb::DB::Open(opts, dbPath_, &raw);
         if (!s.ok())
             throw std::runtime_error("DB::Open failed: " + s.ToString());
-        db_ = raw;
+        db_.reset(raw);
     }
 
     static std::string stateToValue(UrlState s) {
@@ -215,8 +206,8 @@ private:
         return static_cast<UrlState>(raw);
     }
 
-    std::string        dbPath_;
-    rocksdb::DB*       db_ = nullptr;
-    std::mutex         checkAndSetMu_;  // only for atomic check-and-set
-    std::mutex         sealMu_;         // only for seal() filesystem operations
+    std::string                    dbPath_;
+    std::unique_ptr<rocksdb::DB>   db_;
+    std::mutex                     checkAndSetMu_;  // only for atomic check-and-set
+    std::mutex                     sealMu_;         // only for seal() filesystem operations
 };
