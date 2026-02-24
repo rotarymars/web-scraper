@@ -24,6 +24,7 @@
 #include <rocksdb/options.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/checkpoint.h>
+#include <rocksdb/write_batch.h>
 
 namespace fs = std::filesystem;
 
@@ -141,6 +142,30 @@ public:
             throw std::runtime_error("Iterator error: " + it->status().ToString());
         }
         return result;
+    }
+
+    /// Bulk import URLs with a given state using WriteBatch for efficiency.
+    /// Only imports URLs that don't already exist (idempotent).
+    /// Returns the number of URLs actually imported.
+    size_t bulkImport(const std::vector<std::string>& urls, UrlState state) {
+        std::lock_guard<std::mutex> lock(checkAndSetMu_);
+        rocksdb::WriteBatch batch;
+        std::string val = stateToValue(state);
+        size_t count = 0;
+        for (const auto& url : urls) {
+            std::string existing;
+            auto s = db_->Get(rocksdb::ReadOptions(), url, &existing);
+            if (s.IsNotFound()) {
+                batch.Put(url, val);
+                ++count;
+            }
+        }
+        if (count > 0) {
+            auto s = db_->Write(syncWriteOpts(), &batch);
+            if (!s.ok())
+                throw std::runtime_error("bulkImport failed: " + s.ToString());
+        }
+        return count;
     }
 
     // ── Checkpoint / Backup ──────────────────────────────────────────────

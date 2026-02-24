@@ -2,10 +2,10 @@
  * Web Scraper - Iterative URL crawler with regex-based link extraction
  *
  * Prerequisites (Ubuntu/Debian):
- *   sudo apt-get install libcurl4-openssl-dev libzip-dev nlohmann-json3-dev
+ *   sudo apt-get install libcurl4-openssl-dev libzip-dev librocksdb-dev
  *
  * Build:
- *   g++ -std=c++17 -O2 -pthread scraper.cpp -lcurl -lzip -o scraper
+ *   g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lzip -lrocksdb -o scraper
  */
 
 #include <algorithm>
@@ -29,6 +29,8 @@
 #include <curl/curl.h>
 #include <zip.h>
 
+#include "url_state_manager.hpp"
+
 namespace fs = std::filesystem;
 using UrlSet = std::unordered_set<std::string>;
 
@@ -39,6 +41,7 @@ static constexpr size_t MAX_URLS_PER_CHUNK = 500000;
 
 static const fs::path   STATE_DIR{"state"};
 static const fs::path   STATE_FILE = STATE_DIR / "scraper_state.dat";
+static const fs::path   ROCKSDB_DIR = STATE_DIR / "url_state_db";
 static const std::string USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -392,37 +395,68 @@ struct ScrapeResult {
 
 static ScrapeResult scrape(const std::string& startUrl, int maxPages,
                             bool resume, int numWorkers) {
-    UrlSet      visited, toVisit;
+    // For fresh starts, remove any previous RocksDB data
+    if (!resume) {
+        std::error_code ec;
+        fs::remove_all(ROCKSDB_DIR, ec);
+        fs::remove_all(ROCKSDB_DIR.string() + "_checkpoint", ec);
+    }
+
+    // Open (or create) the RocksDB-backed URL state manager
+    fs::create_directories(STATE_DIR);
+    UrlStateManager urlMgr(ROCKSDB_DIR.string());
+
     int         pagesScraped    = 0;
     int         urlsFound       = 0;
     double      originalElapsed = 0.0;
     std::string actualStartUrl  = startUrl;
+    size_t      visitedCount    = 0;
 
     if (resume) {
+        // Import legacy ZIP state into RocksDB for backward compatibility
         auto state = loadState();
         if (state) {
+            std::vector<std::string> visitedVec(state->visited.begin(),
+                                                 state->visited.end());
+            std::vector<std::string> toVisitVec(state->toVisit.begin(),
+                                                 state->toVisit.end());
+            urlMgr.bulkImport(visitedVec, UrlState::COMPLETED);
+            urlMgr.bulkImport(toVisitVec, UrlState::DISCOVERED);
+
+            pagesScraped    = state->pagesScraped;
+            urlsFound       = state->urlsFound;
+            originalElapsed = state->elapsedTime;
+            actualStartUrl  = state->startUrl;
+            visitedCount    = state->visited.size();
+            maxPages        = pagesScraped + maxPages;
+
             std::cout << "Resuming from saved state...\n"
                       << "  Previous start URL: "    << state->startUrl     << '\n'
                       << "  Pages already scraped: " << state->pagesScraped << '\n'
                       << "  URLs in queue: "         << state->toVisit.size() << '\n'
                       << "  URLs visited: "          << state->visited.size() << '\n'
-                      << std::string(80, '-') << '\n';
-
-            visited         = std::move(state->visited);
-            toVisit         = std::move(state->toVisit);
-            pagesScraped    = state->pagesScraped;
-            urlsFound       = state->urlsFound;
-            originalElapsed = state->elapsedTime;
-            actualStartUrl  = state->startUrl;
-            maxPages        = pagesScraped + maxPages;
-            std::cout << "  Will scrape up to " << maxPages
+                      << std::string(80, '-') << '\n'
+                      << "  Will scrape up to " << maxPages
                       << " total pages (continuing from " << pagesScraped << ")\n";
         } else {
             std::cout << "No saved state found. Starting fresh...\n";
-            if (!startUrl.empty()) toVisit.insert(startUrl);
+            if (!startUrl.empty())
+                urlMgr.checkAndSet(startUrl, UrlState::DISCOVERED);
         }
     } else {
-        toVisit.insert(startUrl);
+        urlMgr.checkAndSet(startUrl, UrlState::DISCOVERED);
+    }
+
+    // Reset any interrupted CRAWLING URLs back to DISCOVERED for retry
+    for (const auto& url : urlMgr.getUrlsByState(UrlState::CRAWLING))
+        urlMgr.setState(url, UrlState::DISCOVERED);
+
+    // Build in-memory work queue from all DISCOVERED URLs
+    std::queue<std::string> toVisitQueue;
+    {
+        auto discovered = urlMgr.getUrlsByState(UrlState::DISCOVERED);
+        for (auto& url : discovered)
+            toVisitQueue.push(std::move(url));
     }
 
     auto sessionStart = std::chrono::steady_clock::now();
@@ -439,7 +473,7 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
               << "Max pages: " << maxPages << '\n'
               << std::string(80, '-') << '\n';
 
-    if (resume && toVisit.empty())
+    if (resume && toVisitQueue.empty())
         std::cout << "\nWarning: No URLs in queue to scrape!\n"
                   << "The scraper has already visited all discoverable URLs from the start URL.\n"
                   << "Scraping cannot continue without URLs in the queue.\n"
@@ -447,7 +481,7 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
 
     ThreadPool pool(numWorkers);
 
-    while (!toVisit.empty()) {
+    while (!toVisitQueue.empty()) {
         if (elapsed() > MAX_EXECUTION_TIME) {
             std::cout << "\nSession execution time limit reached (" << elapsed() << " seconds)\n";
             break;
@@ -457,14 +491,16 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             break;
         }
 
-        // Build a batch of unvisited URLs up to numWorkers in size
+        // Build a batch of DISCOVERED URLs, up to numWorkers in size
         std::vector<std::string> batch;
-        while (!toVisit.empty() && static_cast<int>(batch.size()) < numWorkers) {
-            auto        it  = toVisit.begin();
-            std::string url = *it;
-            toVisit.erase(it);
-            if (visited.find(url) == visited.end())
+        while (!toVisitQueue.empty() && static_cast<int>(batch.size()) < numWorkers) {
+            std::string url = std::move(toVisitQueue.front());
+            toVisitQueue.pop();
+            UrlState st;
+            if (urlMgr.getState(url, st) && st == UrlState::DISCOVERED) {
+                urlMgr.setState(url, UrlState::CRAWLING);
                 batch.push_back(std::move(url));
+            }
         }
         if (batch.empty()) continue;
 
@@ -483,8 +519,9 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
         // Process results as they finish (in submission order)
         for (auto& fut : futures) {
             auto [url, found] = fut.get();
-            visited.insert(url);
+            urlMgr.setState(url, UrlState::COMPLETED);
             ++pagesScraped;
+            ++visitedCount;
 
             double totalElapsed = originalElapsed + elapsed();
             std::cout << '[' << pagesScraped << "] Scraped: " << url << '\n';
@@ -492,31 +529,47 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             urlsFound += static_cast<int>(found.size());
             size_t newCount = 0;
             for (const auto& u : found) {
-                if (visited.find(u) == visited.end()) {
-                    toVisit.insert(u);
+                if (urlMgr.checkAndSet(u, UrlState::DISCOVERED)) {
+                    toVisitQueue.push(u);
                     ++newCount;
                 }
             }
             std::cout << "  Found " << found.size() << " URLs (" << newCount << " new)\n"
-                      << "  Queue size: " << toVisit.size()
-                      << ", Visited: " << visited.size() << '\n'
+                      << "  Queue size: " << toVisitQueue.size()
+                      << ", Visited: " << visitedCount << '\n'
                       << "  Elapsed time: " << totalElapsed << "s\n";
         }
     }
 
     double totalTime = originalElapsed + elapsed();
-    saveState(visited, toVisit, actualStartUrl, pagesScraped, urlsFound, totalTime);
+
+    // Export state to legacy ZIP format for backward compatibility and git storage
+    size_t finalQueueSize;
+    {
+        auto completedUrls  = urlMgr.getUrlsByState(UrlState::COMPLETED);
+        auto discoveredUrls = urlMgr.getUrlsByState(UrlState::DISCOVERED);
+
+        UrlSet visitedSet(completedUrls.begin(), completedUrls.end());
+        UrlSet toVisitSet(discoveredUrls.begin(), discoveredUrls.end());
+
+        saveState(visitedSet, toVisitSet, actualStartUrl,
+                  pagesScraped, urlsFound, totalTime);
+
+        visitedCount   = visitedSet.size();
+        finalQueueSize = toVisitSet.size();
+    }
 
     std::cout << std::string(80, '-') << '\n'
               << "Scraping completed!\n"
-              << "Total time: "             << totalTime          << " seconds\n"
-              << "Pages scraped: "          << pagesScraped       << '\n'
-              << "Total URLs found: "       << urlsFound          << '\n'
-              << "Unique URLs visited: "    << visited.size()     << '\n'
-              << "URLs remaining in queue: "<< toVisit.size()     << '\n';
+              << "Total time: "             << totalTime       << " seconds\n"
+              << "Pages scraped: "          << pagesScraped    << '\n'
+              << "Total URLs found: "       << urlsFound       << '\n'
+              << "Unique URLs visited: "    << visitedCount    << '\n'
+              << "URLs remaining in queue: "<< finalQueueSize  << '\n';
 
+    // UrlStateManager destructor seals (checkpoints) the RocksDB database
     return {actualStartUrl, totalTime, pagesScraped, urlsFound,
-            visited.size(), toVisit.size()};
+            visitedCount, finalQueueSize};
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
