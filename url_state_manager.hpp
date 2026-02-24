@@ -60,7 +60,14 @@ public:
     }
 
     ~UrlStateManager() {
-        seal();
+        try {
+            seal();
+        } catch (const std::exception& e) {
+            std::cerr << "UrlStateManager destructor: seal() failed: "
+                      << e.what() << '\n';
+        } catch (...) {
+            std::cerr << "UrlStateManager destructor: seal() threw an unknown exception\n";
+        }
         delete db_;
     }
 
