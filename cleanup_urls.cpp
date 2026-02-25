@@ -44,6 +44,12 @@ static const std::regex RE_VALID_URL{
     std::regex::optimize};
 
 static bool isValidUrl(const std::string& url) {
+    // Guard against stack overflow: GCC's std::regex uses a recursive NFA
+    // whose call depth is O(url.size()) for patterns like [A]+[B].  On a
+    // typical 8 MB stack this overflows at ~50 k characters, producing
+    // SIGSEGV.  Any URL longer than 8 192 bytes is malformed anyway.
+    static constexpr std::size_t MAX_URL_LEN = 8192;
+    if (url.size() > MAX_URL_LEN) return false;
     return std::regex_match(url, RE_VALID_URL);
 }
 
