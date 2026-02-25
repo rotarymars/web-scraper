@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -72,9 +73,10 @@ public:
         try {
             seal();
         } catch (const std::exception& e) {
-            // Cannot propagate from destructor; silently handle.
+            std::cerr << "UrlStateManager: seal() failed in destructor: "
+                      << e.what() << '\n';
         } catch (...) {
-            // Cannot propagate from destructor; silently handle.
+            std::cerr << "UrlStateManager: seal() failed in destructor (unknown error)\n";
         }
     }
 
@@ -159,6 +161,13 @@ public:
         if (!it->status().ok())
             throw std::runtime_error("forEachUrlByState iterator error: " +
                                      it->status().ToString());
+    }
+
+    /// Count URLs that have a given state without loading them into memory.
+    [[nodiscard]] size_t countByState(UrlState state) const {
+        size_t n = 0;
+        forEachUrlByState(state, [&](const std::string&) { ++n; });
+        return n;
     }
 
     /// Bulk import URLs with a given state using WriteBatch for efficiency.
@@ -265,6 +274,12 @@ private:
         opts.table_factory.reset(
             rocksdb::NewBlockBasedTableFactory(tableOpts));
         opts.create_if_missing = true;
+        // GitHub's hard per-file limit is 100 MB.  Keep SST files at 40% of
+        // that to stay safely under the limit on all levels.
+        static constexpr std::uint64_t GITHUB_MAX_FILE_BYTES = 100ULL * 1024 * 1024;
+        static constexpr std::uint64_t SST_TARGET_BYTES      = GITHUB_MAX_FILE_BYTES * 40 / 100;
+        opts.target_file_size_base       = SST_TARGET_BYTES;
+        opts.target_file_size_multiplier = 1; // same limit on every LSM level
 
         rocksdb::DB* raw = nullptr;
         auto s = rocksdb::DB::Open(opts, dbPath_, &raw);

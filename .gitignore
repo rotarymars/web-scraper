@@ -33,7 +33,6 @@ ENV/
 *~
 
 # Output files
-# Note: scraper_results.txt and state/scraper_state.json are tracked for CI
 *.log
 
 # OS
@@ -45,4 +44,3 @@ url_state_manager_test
 extract_urls
 _codeql_detected_source_root
 state/url_state_db/
-state/url_state_db_checkpoint/
