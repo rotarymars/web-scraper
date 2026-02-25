@@ -262,8 +262,19 @@ static std::string resolveUrl(const std::string& base, const std::string& rel) {
     return scheme + "://" + host + dir + rel;
 }
 
-static UrlSet extractUrls(const std::string& html, const std::string& baseUrl) {
+static UrlSet extractUrls(const std::string& raw, const std::string& baseUrl) {
     UrlSet urls;
+
+    // std::regex::icase calls std::toupper/tolower on every character.
+    // Those functions are only defined for values in [0, UCHAR_MAX] or EOF;
+    // on platforms where char is signed, bytes >= 0x80 arrive as negative
+    // ints, which is undefined behaviour and causes SIGSEGV on glibc.
+    // Sanitise the page once up-front: replace every non-ASCII byte (>= 0x80)
+    // and every null byte with a plain space.  ASCII URLs are unaffected.
+    std::string html;
+    html.reserve(raw.size());
+    for (unsigned char c : raw)
+        html += (c == 0 || c >= 0x80) ? ' ' : static_cast<char>(c);
 
     // href and src attributes → resolve relative URLs
     for (const auto& re : {std::cref(RE_HREF), std::cref(RE_SRC)}) {
