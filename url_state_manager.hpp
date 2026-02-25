@@ -185,6 +185,34 @@ public:
         return count;
     }
 
+    /// Fast bulk import for initial database population (e.g. after a cache miss).
+    /// Skips per-key existence checks and WAL writes; last write wins on duplicates.
+    /// Call flushAll() once after all chunks are imported to persist data to SST files.
+    /// Returns the number of URLs written.
+    size_t bulkImportFast(const std::vector<std::string>& urls, UrlState state) {
+        if (urls.empty()) return 0;
+        rocksdb::WriteBatch batch;
+        std::string val = stateToValue(state);
+        for (const auto& url : urls)
+            batch.Put(url, val);
+        rocksdb::WriteOptions wo;
+        wo.disableWAL = true;
+        auto s = db_->Write(wo, &batch);
+        if (!s.ok())
+            throw std::runtime_error("bulkImportFast failed: " + s.ToString());
+        return urls.size();
+    }
+
+    /// Flush all memtable data to SST files.
+    /// Call this once after all bulkImportFast() calls to ensure durability.
+    void flushAll() {
+        rocksdb::FlushOptions fo;
+        fo.wait = true;
+        auto s = db_->Flush(fo);
+        if (!s.ok())
+            throw std::runtime_error("flushAll failed: " + s.ToString());
+    }
+
     // ── Checkpoint / Backup ──────────────────────────────────────────────
 
     /// Seal the database by creating a RocksDB Checkpoint.

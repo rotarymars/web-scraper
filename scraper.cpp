@@ -2,10 +2,10 @@
  * Web Scraper - Iterative URL crawler with regex-based link extraction
  *
  * Prerequisites (Ubuntu/Debian):
- *   sudo apt-get install libcurl4-openssl-dev libzip-dev librocksdb-dev
+ *   sudo apt-get install libcurl4-openssl-dev librocksdb-dev
  *
  * Build:
- *   g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lzip -lrocksdb -o scraper
+ *   g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lrocksdb -o scraper
  */
 
 #include <algorithm>
@@ -26,7 +26,6 @@
 #include <vector>
 
 #include <curl/curl.h>
-#include <zip.h>
 
 #include "url_state_manager.hpp"
 
@@ -39,8 +38,12 @@ static constexpr double MAX_EXECUTION_TIME = 18000.0; // 5 hours
 static constexpr size_t MAX_URLS_PER_CHUNK = 500000;
 
 static const fs::path   STATE_DIR{"state"};
-static const fs::path   STATE_FILE = STATE_DIR / "scraper_state.dat";
-static const fs::path   ROCKSDB_DIR = STATE_DIR / "url_state_db";
+static const fs::path   STATE_FILE      = STATE_DIR / "scraper_state.dat";
+static const fs::path   ROCKSDB_DIR     = STATE_DIR / "url_state_db";
+// Sync marker: records pages_scraped when the RocksDB was last built from
+// chunk files.  Not committed to git, but cached in GitHub Actions alongside
+// the RocksDB checkpoint so both local and CI runs can detect a stale DB.
+static const fs::path   ROCKSDB_SYNC_FILE = STATE_DIR / ".rocksdb_sync";
 static const std::string USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -106,62 +109,55 @@ private:
     bool                                stop_ = false;
 };
 
-// ── ZIP helpers ───────────────────────────────────────────────────────────────
+// ── Plain-text chunk helpers ───────────────────────────────────────────────────
 
-static void saveChunkToZip(const std::vector<std::string>& urls,
-                            const std::string& zipPath) {
-    // Build newline-separated content (no trailing newline)
-    std::string content;
-    content.reserve(urls.size() * 60);
-    for (size_t i = 0; i < urls.size(); ++i) {
-        if (i > 0) content += '\n';
-        content += urls[i];
-    }
-
-    int    err = 0;
-    zip_t* zf  = zip_open(zipPath.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
-    if (!zf) throw std::runtime_error("saveChunkToZip: cannot open " + zipPath);
-
-    // content must remain alive until zip_close (freep=0 → we manage the buffer)
-    zip_source_t* src = zip_source_buffer(zf, content.data(), content.size(), 0);
-    if (!src) {
-        zip_close(zf);
-        throw std::runtime_error("saveChunkToZip: cannot create source");
-    }
-    if (zip_file_add(zf, "urls.txt", src, ZIP_FL_OVERWRITE) < 0) {
-        zip_source_free(src);
-        zip_close(zf);
-        throw std::runtime_error("saveChunkToZip: cannot add file in " + zipPath);
-    }
-    zip_close(zf); // flushes/compresses; content is still in scope
+/// Write a chunk of URLs to a plain-text file (one URL per line, sorted).
+static void saveChunkToTxt(std::vector<std::string> urls,
+                            const std::string& path) {
+    std::sort(urls.begin(), urls.end());
+    std::ofstream f(path);
+    if (!f) throw std::runtime_error("saveChunkToTxt: cannot open " + path);
+    for (const auto& u : urls) f << u << '\n';
 }
 
-static std::vector<std::string> loadChunkFromZip(const std::string& zipPath) {
-    int    err = 0;
-    zip_t* zf  = zip_open(zipPath.c_str(), ZIP_RDONLY, &err);
-    if (!zf) throw std::runtime_error("loadChunkFromZip: cannot open " + zipPath);
-
-    zip_file_t* entry = zip_fopen(zf, "urls.txt", 0);
-    if (!entry) {
-        zip_close(zf);
-        throw std::runtime_error("loadChunkFromZip: urls.txt not found in " + zipPath);
-    }
-
-    std::string content;
-    char        buf[8192];
-    zip_int64_t n;
-    while ((n = zip_fread(entry, buf, sizeof(buf))) > 0)
-        content.append(buf, static_cast<size_t>(n));
-    zip_fclose(entry);
-    zip_close(zf);
-
+/// Read URLs from a plain-text chunk file (one URL per line).
+static std::vector<std::string> loadChunkFromTxt(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) throw std::runtime_error("loadChunkFromTxt: cannot open " + path);
     std::vector<std::string> result;
-    std::istringstream       ss(content);
-    std::string              line;
-    while (std::getline(ss, line))
+    std::string line;
+    while (std::getline(f, line))
         if (!line.empty()) result.push_back(std::move(line));
     return result;
 }
+
+/// Read URLs from a legacy ZIP chunk file (one URL per line inside urls.txt).
+/// Kept for one-time migration from the old ZIP-based format.
+/// NOTE: in the GitHub Actions workflow a Python snippet converts any ZIP chunks
+/// to TXT before the scraper runs, so this branch is only exercised locally.
+static std::vector<std::string> loadChunkFromZip(const std::string& zipPath) {
+    // Use the system `unzip` tool to stream the embedded urls.txt to stdout.
+    std::string cmd = "unzip -p " + zipPath + " urls.txt 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe)
+        throw std::runtime_error("loadChunkFromZip: popen failed for " + zipPath);
+    std::vector<std::string> result;
+    char buf[4096];
+    std::string leftover;
+    while (fgets(buf, sizeof(buf), pipe)) {
+        leftover += buf;
+        size_t pos;
+        while ((pos = leftover.find('\n')) != std::string::npos) {
+            std::string line = leftover.substr(0, pos);
+            if (!line.empty()) result.push_back(std::move(line));
+            leftover = leftover.substr(pos + 1);
+        }
+    }
+    if (!leftover.empty()) result.push_back(std::move(leftover));
+    pclose(pipe);
+    return result;
+}
+
 
 // ── State persistence ─────────────────────────────────────────────────────────
 
@@ -169,7 +165,8 @@ static void cleanupOldChunks() {
     if (!fs::is_directory(STATE_DIR)) return;
     for (const auto& e : fs::directory_iterator(STATE_DIR)) {
         const std::string name = e.path().filename().string();
-        if (e.path().extension() == ".zip" &&
+        const std::string ext  = e.path().extension().string();
+        if ((ext == ".zip" || ext == ".txt") &&
             (name.rfind("scraper_state_visited_",  0) == 0 ||
              name.rfind("scraper_state_to_visit_", 0) == 0)) {
             std::error_code ec;
@@ -179,15 +176,16 @@ static void cleanupOldChunks() {
 }
 
 // State file format (state/scraper_state.dat):
-//   One "key value" pair per line; multi-value keys (visited_chunk,
-//   to_visit_chunk) may appear more than once.
+//   One "key value" pair per line.
 //
 //   start_url      <url>
 //   pages_scraped  <int>
 //   urls_found     <int>
 //   elapsed_time   <double>
-//   visited_chunk  <path>       (repeated)
-//   to_visit_chunk <path>       (repeated)
+//
+// Chunk files are auto-discovered on resume by naming convention:
+//   state/scraper_state_visited_N.txt   (COMPLETED URLs)
+//   state/scraper_state_to_visit_N.txt  (DISCOVERED URLs)
 
 // ── URL utilities ─────────────────────────────────────────────────────────────
 
@@ -307,6 +305,10 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
         fs::remove_all(ROCKSDB_DIR.string() + "_checkpoint", ec);
     }
 
+    // Check if a pre-built RocksDB already exists (e.g. restored from cache).
+    // If so, we skip the chunk-file import entirely on resume.
+    const bool rocksDbExisted = fs::exists(ROCKSDB_DIR / "CURRENT");
+
     // Open (or create) the RocksDB-backed URL state manager
     fs::create_directories(STATE_DIR);
     UrlStateManager urlMgr(ROCKSDB_DIR.string());
@@ -323,9 +325,6 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             std::ifstream sf(STATE_FILE);
             if (!sf) throw std::runtime_error("cannot open state file");
 
-            size_t importedVisited = 0, importedToVisit = 0;
-            size_t chunkV = 0, chunkT = 0;
-
             std::cout << "Resuming from saved state: " << STATE_FILE << '\n'
                       << std::string(80, '-') << '\n';
 
@@ -341,40 +340,80 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
                 else if (key == "pages_scraped") pagesScraped    = std::stoi(val);
                 else if (key == "urls_found")    urlsFound       = std::stoi(val);
                 else if (key == "elapsed_time")  originalElapsed = std::stod(val);
-                else if (key == "visited_chunk") {
-                    if (!fs::exists(val)) continue;
-                    std::cout << "  [visited chunk " << chunkV << "] Loading " << val << " ...\n";
-                    auto chunk = loadChunkFromZip(val);
-                    std::cout << "    " << chunk.size() << " URLs read from zip\n";
-                    size_t n = urlMgr.bulkImport(chunk, UrlState::COMPLETED);
-                    importedVisited += n;
-                    std::cout << "    " << n << " URLs imported into RocksDB\n";
-                    ++chunkV;
-                }
-                else if (key == "to_visit_chunk") {
-                    if (!fs::exists(val)) continue;
-                    std::cout << "  [to-visit chunk " << chunkT << "] Loading " << val << " ...\n";
-                    auto chunk = loadChunkFromZip(val);
-                    std::cout << "    " << chunk.size() << " URLs read from zip\n";
-                    size_t n = urlMgr.bulkImport(chunk, UrlState::DISCOVERED);
-                    importedToVisit += n;
-                    std::cout << "    " << n << " URLs imported into RocksDB\n";
-                    ++chunkT;
-                }
+                // Chunk keys (visited_chunk / to_visit_chunk) are ignored here;
+                // chunk files are auto-discovered by naming convention below.
             }
 
-            visitedCount = importedVisited;
-            maxPages     = pagesScraped + maxPages;
+            if (rocksDbExisted) {
+                // RocksDB was restored from the GitHub Actions cache — no import needed.
+                visitedCount = urlMgr.getUrlsByState(UrlState::COMPLETED).size();
+                double took  = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - tResume).count();
+                std::cout << "  RocksDB loaded from cache in " << took << "s\n";
+            } else {
+                // Cache miss: rebuild RocksDB from plain-text chunk files.
+                // Falls back to legacy ZIP files for the one-time migration.
+                size_t importedVisited = 0, importedToVisit = 0;
+                size_t chunkV = 0, chunkT = 0;
 
-            double took = std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - tResume).count();
+                // Helper: import one chunk file (txt or zip) into the DB.
+                auto importChunk = [&](const fs::path& p, UrlState st,
+                                       size_t& imported, size_t& idx,
+                                       const char* label) {
+                    std::cout << "  [" << label << " chunk " << idx
+                              << "] Loading " << p.string() << " ...\n";
+                    std::vector<std::string> chunk;
+                    if (p.extension() == ".txt")
+                        chunk = loadChunkFromTxt(p.string());
+                    else
+                        chunk = loadChunkFromZip(p.string());
+                    std::cout << "    " << chunk.size() << " URLs read\n";
+                    size_t n = urlMgr.bulkImportFast(chunk, st);
+                    imported += n;
+                    ++idx;
+                };
+
+                // Auto-discover visited chunks
+                for (int i = 0; ; ++i) {
+                    fs::path pt = STATE_DIR / ("scraper_state_visited_"
+                                               + std::to_string(i) + ".txt");
+                    fs::path pz = STATE_DIR / ("scraper_state_visited_"
+                                               + std::to_string(i) + ".zip");
+                    if      (fs::exists(pt)) importChunk(pt, UrlState::COMPLETED,  importedVisited, chunkV, "visited");
+                    else if (fs::exists(pz)) importChunk(pz, UrlState::COMPLETED,  importedVisited, chunkV, "visited");
+                    else break;
+                }
+
+                // Auto-discover to-visit chunks
+                for (int i = 0; ; ++i) {
+                    fs::path pt = STATE_DIR / ("scraper_state_to_visit_"
+                                               + std::to_string(i) + ".txt");
+                    fs::path pz = STATE_DIR / ("scraper_state_to_visit_"
+                                               + std::to_string(i) + ".zip");
+                    if      (fs::exists(pt)) importChunk(pt, UrlState::DISCOVERED, importedToVisit, chunkT, "to-visit");
+                    else if (fs::exists(pz)) importChunk(pz, UrlState::DISCOVERED, importedToVisit, chunkT, "to-visit");
+                    else break;
+                }
+
+                // Flush all no-WAL writes to SST files
+                urlMgr.flushAll();
+
+                visitedCount = importedVisited;
+                double took  = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - tResume).count();
+
+                std::cout << std::string(80, '-') << '\n'
+                          << "  Imported " << importedVisited << " visited + "
+                          << importedToVisit << " to-visit URLs in "
+                          << took << "s\n";
+            }
+
+            maxPages = pagesScraped + maxPages;
+
             std::cout << std::string(80, '-') << '\n'
-                      << "  Previous start URL: "     << actualStartUrl  << '\n'
-                      << "  Pages already scraped: "  << pagesScraped    << '\n'
-                      << "  URLs imported to queue: " << importedToVisit << '\n'
-                      << "  URLs visited: "           << importedVisited << '\n'
-                      << "  State imported in "       << took            << "s\n"
-                      << std::string(80, '-') << '\n'
+                      << "  Previous start URL: "    << actualStartUrl  << '\n'
+                      << "  Pages already scraped: " << pagesScraped    << '\n'
+                      << "  URLs visited: "          << visitedCount    << '\n'
                       << "  Will scrape up to " << maxPages
                       << " total pages (continuing from " << pagesScraped << ")\n";
         } else {
@@ -482,34 +521,32 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
 
     double totalTime = originalElapsed + elapsed();
 
-    // Export state to legacy ZIP format for backward compatibility and git storage
+    // Export state to plain-text chunk files for git storage.
+    // Chunks are sorted so git can compute small deltas between runs.
     size_t finalQueueSize = 0;
     {
         auto tSave = std::chrono::steady_clock::now();
         fs::create_directories(STATE_DIR);
         cleanupOldChunks();
 
-        // Stream URLs from RocksDB into zip chunks one chunk at a time,
-        // never holding more than MAX_URLS_PER_CHUNK URLs in memory at once.
+        // Stream URLs from RocksDB into text chunks, one chunk at a time.
         auto writeChunksStreaming = [&](UrlState state, const std::string& prefix,
                                         const std::string& label)
-                -> std::pair<std::vector<std::string>, size_t> {
-            std::vector<std::string> files;
+                -> std::pair<size_t, size_t> {
             std::vector<std::string> batch;
             batch.reserve(MAX_URLS_PER_CHUNK);
-            size_t chunkIdx = 0;
+            size_t chunkIdx  = 0;
             size_t totalUrls = 0;
 
             auto flush = [&]() {
                 if (batch.empty()) return;
                 std::string path =
-                    (STATE_DIR / (prefix + std::to_string(chunkIdx) + ".zip")).string();
+                    (STATE_DIR / (prefix + std::to_string(chunkIdx) + ".txt")).string();
                 std::cout << "  [" << label << " chunk " << chunkIdx << "] Writing "
                           << batch.size() << " URLs -> " << path << " ...\n";
-                saveChunkToZip(batch, path);
+                saveChunkToTxt(batch, path);   // sorts inside
                 std::cout << "    Done\n";
                 totalUrls += batch.size();
-                files.push_back(std::move(path));
                 ++chunkIdx;
                 batch.clear();
             };
@@ -521,34 +558,31 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             flush();
 
             std::cout << "  Total: " << totalUrls << " URLs across "
-                      << files.size() << " chunk(s)\n";
-            return {std::move(files), totalUrls};
+                      << chunkIdx << " chunk(s)\n";
+            return {chunkIdx, totalUrls};
         };
 
-        std::cout << "Saving visited URLs (COMPLETED) to zip chunks...\n";
-        auto [visitedFiles, visitedTotal] =
+        std::cout << "Saving visited URLs (COMPLETED) to text chunks...\n";
+        auto [nVisitedChunks, visitedTotal] =
             writeChunksStreaming(UrlState::COMPLETED, "scraper_state_visited_", "visited");
         visitedCount = visitedTotal;
 
-        std::cout << "Saving to-visit URLs (DISCOVERED) to zip chunks...\n";
-        auto [toVisitFiles, toVisitTotal] =
+        std::cout << "Saving to-visit URLs (DISCOVERED) to text chunks...\n";
+        auto [nToVisitChunks, toVisitTotal] =
             writeChunksStreaming(UrlState::DISCOVERED, "scraper_state_to_visit_", "to-visit");
         finalQueueSize = toVisitTotal;
 
+        // Write metadata-only state file (chunk paths are auto-discovered by name).
         std::ofstream f(STATE_FILE);
         f << "start_url "     << actualStartUrl << '\n'
           << "pages_scraped " << pagesScraped   << '\n'
           << "urls_found "    << urlsFound      << '\n'
           << "elapsed_time "  << std::fixed     << totalTime << '\n';
-        for (const auto& p : visitedFiles)  f << "visited_chunk "  << p << '\n';
-        for (const auto& p : toVisitFiles)  f << "to_visit_chunk " << p << '\n';
 
         double took = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - tSave).count();
-        int totalChunks =
-            static_cast<int>(visitedFiles.size() + toVisitFiles.size());
         std::cout << "  State saved to " << STATE_FILE
-                  << " with " << totalChunks << " chunk files"
+                  << " with " << (nVisitedChunks + nToVisitChunks) << " chunk file(s)"
                   << " (took " << took << "s)\n";
     }
 

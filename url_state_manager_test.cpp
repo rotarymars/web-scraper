@@ -202,6 +202,39 @@ void test_url_state_to_string() {
     assert(urlStateToString(UrlState::FAILED)     == "FAILED");
 }
 
+void test_bulk_import_fast() {
+    UrlStateManager mgr(TEST_DB);
+    std::vector<std::string> urls;
+    for (int i = 0; i < 1000; ++i)
+        urls.push_back("http://fast-import-" + std::to_string(i) + ".com");
+
+    size_t n = mgr.bulkImportFast(urls, UrlState::COMPLETED);
+    assert(n == 1000);
+    mgr.flushAll();   // ensure no-WAL data is persisted to SST
+
+    // Verify a sample of entries
+    UrlState s{};
+    assert(mgr.getState("http://fast-import-0.com",   s)); assert(s == UrlState::COMPLETED);
+    assert(mgr.getState("http://fast-import-999.com", s)); assert(s == UrlState::COMPLETED);
+
+    // Verify total count via iteration
+    auto completed = mgr.getUrlsByState(UrlState::COMPLETED);
+    assert(completed.size() == 1000);
+}
+
+void test_bulk_import_fast_last_write_wins() {
+    UrlStateManager mgr(TEST_DB);
+    // Import same URL as COMPLETED then re-import as DISCOVERED; DISCOVERED wins.
+    std::vector<std::string> urls = {"http://overwrite-test.com"};
+    mgr.bulkImportFast(urls, UrlState::COMPLETED);
+    mgr.bulkImportFast(urls, UrlState::DISCOVERED);
+    mgr.flushAll();
+
+    UrlState s{};
+    assert(mgr.getState("http://overwrite-test.com", s));
+    assert(s == UrlState::DISCOVERED);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -219,6 +252,8 @@ int main() {
     RUN_TEST(test_thread_safety);
     RUN_TEST(test_concurrent_check_and_set);
     RUN_TEST(test_url_state_to_string);
+    RUN_TEST(test_bulk_import_fast);
+    RUN_TEST(test_bulk_import_fast_last_write_wins);
 
     std::cout << "\n=== Results: " << passed << " passed, "
               << failed << " failed ===\n";
