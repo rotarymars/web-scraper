@@ -36,6 +36,30 @@ _RE_URL = re.compile(
 )
 _ATTR_PATTERNS = (_RE_HREF, _RE_SRC)
 
+# Pre-compiled regex for URL scheme normalisation
+_RE_SCHEME = re.compile(r'^([a-zA-Z][a-zA-Z0-9+\-.]*)(://)', re.ASCII)
+
+
+def _normalize_scheme(url: str) -> str:
+    """Lowercase the URL scheme, e.g. 'Https://foo' → 'https://foo'."""
+    m = _RE_SCHEME.match(url)
+    if m:
+        return m.group(1).lower() + m.group(2) + url[m.end():]
+    return url
+
+
+def _is_valid_url(url: str) -> bool:
+    """Return True iff url has a lowercase http(s) scheme and a non-empty host."""
+    if url.startswith('http://'):
+        host_start = 7
+    elif url.startswith('https://'):
+        host_start = 8
+    else:
+        return False
+    host_end = url.find('/', host_start)
+    host = url[host_start:] if host_end == -1 else url[host_start:host_end]
+    return bool(host) and host[0] not in ('#', '?')
+
 # Reusable User-Agent header
 _REQUEST_HEADERS = {
     'User-Agent': (
@@ -193,20 +217,26 @@ def extract_urls(html_content: str, base_url: str) -> Set[str]:
         for match in pattern.finditer(html_content):
             try:
                 url = urljoin(base_url, match.group(1))
-                if url.startswith(('http://', 'https://')):
+                url = _normalize_scheme(url)
+                if _is_valid_url(url):
                     urls.add(url)
             except ValueError:
                 continue
 
-    # Extract standalone URLs (already absolute)
+    # Extract standalone URLs (already absolute); normalise scheme to lowercase
+    # (RE_URL uses IGNORECASE so "Https://" would match).
     for match in _RE_URL.finditer(html_content):
-        urls.add(match.group(0))
+        url = _normalize_scheme(match.group(0))
+        if _is_valid_url(url):
+            urls.add(url)
 
     return urls
 
 
 def fetch_url(url: str, timeout: int = 10) -> str:
     """Fetch content from a URL."""
+    if not _is_valid_url(url):
+        return ""
     try:
         req = urllib.request.Request(url, headers=_REQUEST_HEADERS)
         with urllib.request.urlopen(req, timeout=timeout) as response:
