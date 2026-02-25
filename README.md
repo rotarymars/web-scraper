@@ -20,3 +20,5 @@ With ZIP compression enabled:
 - Space saved: ~67.8% reduction
 
 This helps keep the repository size manageable and avoids hitting GitHub's 10GiB repository size limit.
+
+Also, URLs that exceed the length of `8192` characters are now truncated to prevent stack overflow errors during processing(because it uses regex for URL validation).
