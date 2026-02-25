@@ -218,13 +218,40 @@ static void cleanupOldChunks() {
 
 // ── URL utilities ─────────────────────────────────────────────────────────────
 
+/// Returns true iff `url` has a lowercase http:// or https:// scheme and a
+/// non-empty hostname.  Rejects "Https://...", "http:///path", etc.
+static bool isValidHttpUrl(const std::string& url) {
+    const bool isHttp  = url.size() > 7 && url.compare(0, 7,  "http://")  == 0;
+    const bool isHttps = url.size() > 8 && url.compare(0, 8,  "https://") == 0;
+    if (!isHttp && !isHttps) return false;
+    const size_t hostStart = isHttps ? 8 : 7;
+    const size_t hostEnd   = url.find('/', hostStart);
+    const size_t hostLen   = (hostEnd == std::string::npos)
+                             ? url.size() - hostStart
+                             : hostEnd - hostStart;
+    // Also reject query-only hosts like "http://?foo" (hostLen==0 after '?')
+    return hostLen > 0 && url[hostStart] != '?' && url[hostStart] != '#';
+}
+
+/// Lowercases the URL scheme (the text before "://"), e.g. "Https://" → "https://".
+static std::string normalizeScheme(std::string url) {
+    const size_t colonPos = url.find("://");
+    if (colonPos == std::string::npos) return url;
+    for (size_t i = 0; i < colonPos; ++i)
+        url[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(url[i])));
+    return url;
+}
+
 static std::string resolveUrl(const std::string& base, const std::string& rel) {
     if (rel.empty()) return "";
 
-    // Already absolute
-    if (rel.size() >= 7 &&
-        (rel.substr(0, 7) == "http://" || rel.substr(0, 8) == "https://"))
-        return rel;
+    // Already absolute – normalise scheme to lowercase and validate
+    {
+        std::string norm = normalizeScheme(rel);
+        if (norm.size() >= 7 &&
+            (norm.compare(0, 7, "http://") == 0 || norm.compare(0, 8, "https://") == 0))
+            return isValidHttpUrl(norm) ? norm : "";
+    }
 
     // Skip fragment-only, query-only, and non-http schemes (mailto:, javascript:, data:…)
     if (rel[0] == '#' || rel[0] == '?') return "";
@@ -242,6 +269,9 @@ static std::string resolveUrl(const std::string& base, const std::string& rel) {
     const std::string host      = (hostEnd == std::string::npos)
                                   ? base.substr(hostStart)
                                   : base.substr(hostStart, hostEnd - hostStart);
+
+    // Reject base URLs with an empty hostname (e.g. "http:///path")
+    if (host.empty()) return "";
 
     // Protocol-relative  //host/path
     if (rel.size() >= 2 && rel.substr(0, 2) == "//")
@@ -281,16 +311,19 @@ static UrlSet extractUrls(const std::string& raw, const std::string& baseUrl) {
         auto begin = std::sregex_iterator(html.begin(), html.end(), re.get());
         for (auto it = begin; it != std::sregex_iterator(); ++it) {
             std::string resolved = resolveUrl(baseUrl, (*it)[1].str());
-            if (resolved.size() >= 7 &&
-                (resolved.substr(0, 7) == "http://" || resolved.substr(0, 8) == "https://"))
+            if (isValidHttpUrl(resolved))
                 urls.insert(std::move(resolved));
         }
     }
 
-    // Bare absolute URLs embedded in the markup
+    // Bare absolute URLs embedded in the markup; normalise scheme to lowercase
+    // and validate before inserting (RE_URL uses icase so "Https://" would match).
     auto begin = std::sregex_iterator(html.begin(), html.end(), RE_URL);
-    for (auto it = begin; it != std::sregex_iterator(); ++it)
-        urls.insert((*it)[0].str());
+    for (auto it = begin; it != std::sregex_iterator(); ++it) {
+        std::string u = normalizeScheme((*it)[0].str());
+        if (isValidHttpUrl(u))
+            urls.insert(std::move(u));
+    }
 
     return urls;
 }
@@ -303,6 +336,9 @@ static size_t curlWrite(char* ptr, size_t size, size_t nmemb, std::string* out) 
 }
 
 static std::string fetchUrl(const std::string& url, long timeout = 10) {
+    // Skip malformed, empty, or non-http(s) URLs before touching libcurl.
+    if (!isValidHttpUrl(url)) return "";
+
     CURL* curl = curl_easy_init();
     if (!curl) return "";
 
