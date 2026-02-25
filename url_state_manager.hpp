@@ -170,6 +170,30 @@ public:
         return n;
     }
 
+    /// Invoke fn(url) for every URL in the database, regardless of state.
+    void forEachUrl(const std::function<void(const std::string&)>& fn) const {
+        std::unique_ptr<rocksdb::Iterator> it(
+            db_->NewIterator(rocksdb::ReadOptions()));
+        for (it->SeekToFirst(); it->Valid(); it->Next())
+            fn(it->key().ToString());
+        if (!it->status().ok())
+            throw std::runtime_error("forEachUrl iterator error: " +
+                                     it->status().ToString());
+    }
+
+    /// Bulk-delete a list of URLs using a single WriteBatch.
+    /// Returns the number of URLs submitted for deletion.
+    size_t bulkDelete(const std::vector<std::string>& urls) {
+        if (urls.empty()) return 0;
+        rocksdb::WriteBatch batch;
+        for (const auto& url : urls)
+            batch.Delete(url);
+        auto s = db_->Write(syncWriteOpts(), &batch);
+        if (!s.ok())
+            throw std::runtime_error("bulkDelete failed: " + s.ToString());
+        return urls.size();
+    }
+
     /// Bulk import URLs with a given state using WriteBatch for efficiency.
     /// Only imports URLs that don't already exist (idempotent).
     /// Returns the number of URLs actually imported.
