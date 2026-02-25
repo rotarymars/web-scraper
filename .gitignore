@@ -42,5 +42,6 @@ Thumbs.db
 scraper
 url_state_manager_test
 extract_urls
+cleanup_urls
 _codeql_detected_source_root
 state/url_state_db/
