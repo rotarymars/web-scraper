@@ -21,16 +21,65 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev libzip-dev librocksdb-dev
+          sudo apt-get install -y libcurl4-openssl-dev librocksdb-dev
 
       - name: Build scraper
         run: |
-          g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lzip -lrocksdb -o scraper
+          g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lrocksdb -o scraper
 
       - name: Build and test URL state manager
         run: |
           g++ -std=c++23 -O2 -Wall -pthread url_state_manager_test.cpp -lrocksdb -o url_state_manager_test
           ./url_state_manager_test
+
+      - name: Build extract_urls tool
+        run: |
+          g++ -std=c++23 -O2 -Wall extract_urls.cpp -lrocksdb -o extract_urls
+
+      - name: Convert legacy ZIP chunks to plain-text (one-time migration)
+        run: |
+          python3 - <<'EOF'
+          import zipfile, pathlib, sys
+          state = pathlib.Path("state")
+          zips = sorted(state.glob("scraper_state_*.zip"))
+          if not zips:
+              print("No ZIP chunks to migrate.")
+              sys.exit(0)
+          print(f"Migrating {len(zips)} ZIP chunk(s) to plain text...")
+          for zp in zips:
+              txt = zp.with_suffix(".txt")
+              try:
+                  with zipfile.ZipFile(zp) as zf:
+                      if "urls.txt" in zf.namelist():
+                          data = zf.read("urls.txt").decode("utf-8", errors="replace")
+                          txt.write_text(data, encoding="utf-8")
+                      elif "urls.json" in zf.namelist():
+                          import json
+                          urls = json.loads(zf.read("urls.json").decode("utf-8"))
+                          txt.write_text("\n".join(urls) + "\n", encoding="utf-8")
+                      else:
+                          print(f"  WARNING: {zp} has no recognised entry, skipping")
+                          continue
+                  zp.unlink()
+                  print(f"  {zp.name} -> {txt.name}")
+              except Exception as e:
+                  print(f"  ERROR converting {zp}: {e}", file=sys.stderr)
+          print("Migration complete.")
+          EOF
+
+      - name: Prepare RocksDB from committed checkpoint
+        run: |
+          # The checkpoint is committed to git and checked out above.
+          # Rename it to the live DB path so the scraper opens it directly
+          # (zero-import fast path).  The scraper also handles this rename
+          # internally, so this step is a belt-and-braces safety measure.
+          if [ -d state/url_state_db_checkpoint ]; then
+            echo "Checkpoint found; promoting to live database..."
+            rm -rf state/url_state_db
+            mv state/url_state_db_checkpoint state/url_state_db
+          else
+            echo "No checkpoint found; scraper will rebuild from chunk files if any exist."
+          fi
 
       - name: Run scraper
         run: |
@@ -49,7 +98,12 @@ jobs:
 
       - name: Commit and push results
         run: |
-          git add state/scraper_state.dat state/scraper_state*.zip scraper_results.txt
+          # Remove legacy ZIP / plain-text chunk files (replaced by the checkpoint)
+          git rm -rf --ignore-unmatch 'state/scraper_state*.zip' \
+                                      'state/scraper_state*.txt' \
+                                      state/scraper_state.json
+          # Stage the RocksDB checkpoint and metadata
+          git add state/url_state_db_checkpoint/ state/scraper_state.dat scraper_results.txt
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else

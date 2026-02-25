@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -72,9 +73,10 @@ public:
         try {
             seal();
         } catch (const std::exception& e) {
-            // Cannot propagate from destructor; silently handle.
+            std::cerr << "UrlStateManager: seal() failed in destructor: "
+                      << e.what() << '\n';
         } catch (...) {
-            // Cannot propagate from destructor; silently handle.
+            std::cerr << "UrlStateManager: seal() failed in destructor (unknown error)\n";
         }
     }
 
@@ -161,6 +163,13 @@ public:
                                      it->status().ToString());
     }
 
+    /// Count URLs that have a given state without loading them into memory.
+    [[nodiscard]] size_t countByState(UrlState state) const {
+        size_t n = 0;
+        forEachUrlByState(state, [&](const std::string&) { ++n; });
+        return n;
+    }
+
     /// Bulk import URLs with a given state using WriteBatch for efficiency.
     /// Only imports URLs that don't already exist (idempotent).
     /// Returns the number of URLs actually imported.
@@ -183,6 +192,34 @@ public:
                 throw std::runtime_error("bulkImport failed: " + s.ToString());
         }
         return count;
+    }
+
+    /// Fast bulk import for initial database population (e.g. after a cache miss).
+    /// Skips per-key existence checks and WAL writes; last write wins on duplicates.
+    /// Call flushAll() once after all chunks are imported to persist data to SST files.
+    /// Returns the number of URLs written.
+    size_t bulkImportFast(const std::vector<std::string>& urls, UrlState state) {
+        if (urls.empty()) return 0;
+        rocksdb::WriteBatch batch;
+        std::string val = stateToValue(state);
+        for (const auto& url : urls)
+            batch.Put(url, val);
+        rocksdb::WriteOptions wo;
+        wo.disableWAL = true;
+        auto s = db_->Write(wo, &batch);
+        if (!s.ok())
+            throw std::runtime_error("bulkImportFast failed: " + s.ToString());
+        return urls.size();
+    }
+
+    /// Flush all memtable data to SST files.
+    /// Call this once after all bulkImportFast() calls to ensure durability.
+    void flushAll() {
+        rocksdb::FlushOptions fo;
+        fo.wait = true;
+        auto s = db_->Flush(fo);
+        if (!s.ok())
+            throw std::runtime_error("flushAll failed: " + s.ToString());
     }
 
     // ── Checkpoint / Backup ──────────────────────────────────────────────
@@ -237,6 +274,12 @@ private:
         opts.table_factory.reset(
             rocksdb::NewBlockBasedTableFactory(tableOpts));
         opts.create_if_missing = true;
+        // GitHub's hard per-file limit is 100 MB.  Keep SST files at 40% of
+        // that to stay safely under the limit on all levels.
+        static constexpr std::uint64_t GITHUB_MAX_FILE_BYTES = 100ULL * 1024 * 1024;
+        static constexpr std::uint64_t SST_TARGET_BYTES      = GITHUB_MAX_FILE_BYTES * 40 / 100;
+        opts.target_file_size_base       = SST_TARGET_BYTES;
+        opts.target_file_size_multiplier = 1; // same limit on every LSM level
 
         rocksdb::DB* raw = nullptr;
         auto s = rocksdb::DB::Open(opts, dbPath_, &raw);
