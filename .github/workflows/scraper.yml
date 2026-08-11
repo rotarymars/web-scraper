@@ -4,28 +4,65 @@ on:
   schedule:
     - cron: '0 */4 * * *'
   workflow_dispatch:
+    inputs:
+      max_pages:
+        description: 'Pages to scrape in this run'
+        required: false
+        default: '100000'
+      workers:
+        description: 'Parallel fetch workers'
+        required: false
+        default: '5'
+      max_seconds:
+        description: 'Wall-clock budget for the crawl itself'
+        required: false
+        default: '10800'
+      reset:
+        description: 'Discard the cached URL database and crawl from scratch'
+        type: boolean
+        required: false
+        default: false
+
+# Never let two crawls run at once: they would fork the URL database and race
+# each other pushing state/scraper_state.dat.
+concurrency:
+  group: wikipedia-scraper
+  cancel-in-progress: false
+
+env:
+  CACHE_PREFIX: url-state-v1
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 330
 
     permissions:
       contents: write
+      actions: write   # required to prune superseded caches
 
     steps:
+      # A shallow checkout is essential: the repository history is ~7.6 GB
+      # (legacy state dumps), while the tip tree is a handful of source files.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+
+      - name: Free up runner disk space
+        run: |
+          echo "Before:"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          echo "After:"; df -h /
 
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev librocksdb-dev
+          sudo apt-get install -y libcurl4-openssl-dev librocksdb-dev zstd
 
       - name: Build scraper
-        run: |
-          g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lrocksdb -o scraper
+        run: g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lrocksdb -o scraper
 
       - name: Build and test URL state manager
         run: |
@@ -33,49 +70,142 @@ jobs:
           ./url_state_manager_test
 
       - name: Build extract_urls tool
-        run: |
-          g++ -std=c++23 -O2 -Wall extract_urls.cpp -lrocksdb -o extract_urls
+        run: g++ -std=c++23 -O2 -Wall extract_urls.cpp -lrocksdb -o extract_urls
 
-      - name: Prepare RocksDB from committed checkpoint
+      # The URL database is far too large to commit (1.1 GB back in February and
+      # still growing), so it is carried between runs in the Actions cache.
+      # The run-id key is always unique, so the save at the end never collides;
+      # restore-keys picks up the most recent previous run.
+      - name: Restore URL database
+        id: restore
+        if: ${{ inputs.reset != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: state/url_state.tar.zst
+          key: ${{ env.CACHE_PREFIX }}-${{ github.run_id }}
+          restore-keys: ${{ env.CACHE_PREFIX }}-
+
+      - name: Unpack URL database
+        id: unpack
+        env:
+          RESET: ${{ inputs.reset }}
         run: |
-          # The checkpoint is committed to git and checked out above.
-          # Rename it to the live DB path so the scraper opens it directly
-          # (zero-import fast path).  The scraper also handles this rename
-          # internally, so this step is a belt-and-braces safety measure.
-          if [ -d state/url_state_db_checkpoint ]; then
-            echo "Checkpoint found; promoting to live database..."
-            rm -rf state/url_state_db
-            mv state/url_state_db_checkpoint state/url_state_db
-          else
-            echo "No checkpoint found; scraper will rebuild from chunk files if any exist."
+          if [ -f state/url_state.tar.zst ]; then
+            echo "Restored archive: $(du -h state/url_state.tar.zst | cut -f1)"
+            tar -x -I zstd -f state/url_state.tar.zst
+            rm -f state/url_state.tar.zst
           fi
-
-      - name: Run scraper
-        run: |
+          if [ "$RESET" = "true" ]; then
+            echo "Reset requested; discarding database and cumulative counters."
+            rm -rf state/url_state_db state/url_state_db_checkpoint state/scraper_state.dat
+          fi
+          if [ -f state/url_state_db/CURRENT ]; then
+            echo "Live database ready: $(du -sh state/url_state_db | cut -f1)"
+          else
+            echo "No database present; the crawl will re-seed from the start URL."
+          fi
+          # Resume whenever cumulative metadata survives, even without a
+          # database: the scraper re-seeds the start URL in that case, which
+          # keeps the running page/URL totals intact across a cache miss.
           if [ -f state/scraper_state.dat ]; then
-            echo "State file found, resuming scraping..."
-            ./scraper --resume 100000 --workers 5
+            echo "resume=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No state file found, starting fresh..."
-            ./scraper --wikipedia 100000 --workers 5
+            echo "resume=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Configure Git
+      # The crawl budget keeps the run comfortably inside the 6h job limit,
+      # leaving room to archive and upload a multi-GB database afterwards.
+      - name: Run scraper
+        env:
+          RESUME: ${{ steps.unpack.outputs.resume }}
+          MAX_PAGES: ${{ inputs.max_pages || '100000' }}
+          WORKERS: ${{ inputs.workers || '5' }}
+          MAX_SECONDS: ${{ inputs.max_seconds || '10800' }}
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          if [ "$RESUME" = "true" ]; then
+            ./scraper --resume "$MAX_PAGES" --workers "$WORKERS" --max-seconds "$MAX_SECONDS"
+          else
+            ./scraper --wikipedia "$MAX_PAGES" --workers "$WORKERS" --max-seconds "$MAX_SECONDS"
+          fi
 
+      # Runs even when the crawl fails or times out. RocksDB writes with
+      # sync=true, so the live database is recoverable from its WAL on the next
+      # open; a partial run therefore still moves the crawl forward.
+      - name: Pack URL database
+        if: always()
+        id: pack
+        run: |
+          if [ ! -f state/url_state_db/CURRENT ]; then
+            echo "No database to persist."
+            echo "packed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The checkpoint is a hard-linked snapshot of the live DB and adds no
+          # useful information to the archive.
+          rm -rf state/url_state_db_checkpoint
+          tar -c -I 'zstd -3 -T0' -f state/url_state.tar.zst state/url_state_db
+          size=$(stat -c %s state/url_state.tar.zst)
+          echo "Archive: $(numfmt --to=iec "$size")"
+          # The per-repository cache quota is 10 GB; refuse to push an archive
+          # that would evict itself rather than failing opaquely later.
+          if [ "$size" -gt $((9 * 1024 * 1024 * 1024)) ]; then
+            echo "::error::URL database archive exceeds the 10 GB Actions cache quota."
+            echo "packed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "packed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Save URL database
+        id: save
+        if: always() && steps.pack.outputs.packed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state/url_state.tar.zst
+          key: ${{ env.CACHE_PREFIX }}-${{ github.run_id }}
+
+      # Each run writes a multi-GB entry, so without pruning the 10 GB quota
+      # evicts entries in an order we do not control.  Gated on the save having
+      # succeeded, and keyed by name rather than position, so a failed save can
+      # never delete the last good database.
+      - name: Prune superseded caches
+        if: always() && steps.save.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_KEY: ${{ env.CACHE_PREFIX }}-${{ github.run_id }}
+        run: |
+          gh cache list --key "$CACHE_PREFIX-" --limit 100 --json id,key \
+            | jq -r --arg keep "$KEEP_KEY" '.[] | select(.key != $keep) | .id' \
+            | while read -r id; do
+                echo "Deleting superseded cache $id"
+                gh cache delete "$id" || true
+              done
+
+      # Only the small human-readable summaries are committed; the database
+      # itself stays in the cache.
       - name: Commit and push results
+        if: always()
         run: |
-          # Remove legacy ZIP / plain-text chunk files (replaced by the checkpoint)
-          git rm -rf --ignore-unmatch 'state/scraper_state*.zip' \
-                                      'state/scraper_state*.txt' \
-                                      state/scraper_state.json
-          # Stage the RocksDB checkpoint and metadata
-          git add state/url_state_db_checkpoint/ state/scraper_state.dat scraper_results.txt
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: update scraper data"
-            git push
-          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          for attempt in 1 2 3; do
+            git add state/scraper_state.dat scraper_results.txt
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+              exit 0
+            fi
+            git commit -m "chore: update scraper data [skip ci]"
+            if git push origin "HEAD:$GITHUB_REF_NAME"; then
+              echo "Pushed on attempt $attempt"
+              exit 0
+            fi
+            # Someone else (e.g. the VPS crawler) pushed first.  A rebase is not
+            # dependable on the shallow clone this job uses, so re-anchor onto
+            # the new remote tip instead: a mixed reset keeps our two modified
+            # files in the working tree while discarding any assumption about
+            # the rest of the tree, so the retry commits only our own changes.
+            echo "Push rejected; re-anchoring onto the current origin/$GITHUB_REF_NAME"
+            git fetch --depth=1 --no-tags origin "$GITHUB_REF_NAME"
+            git reset FETCH_HEAD
+          done
+          echo "::error::Failed to push results after 3 attempts"
+          exit 1

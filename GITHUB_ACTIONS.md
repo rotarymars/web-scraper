@@ -2,68 +2,82 @@
 
 ## Overview
 
-The Wikipedia scraper is integrated with GitHub Actions to run automatically every 2 hours, continuously building a dataset of Wikipedia URLs.
+`.github/workflows/scraper.yml` runs the C++ crawler on a schedule, so that each
+run continues the crawl the previous run left off. Continuity depends on the
+RocksDB URL database surviving between runs; it is carried in the GitHub Actions
+cache, not in git.
 
-## Workflow Details
+## Schedule
 
-### Schedule
-- **Cron Schedule**: `0 */2 * * *` (runs at minute 0 of every 2nd hour)
-- **Times**: 00:00, 02:00, 04:00, 06:00, 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00 UTC
-- **Frequency**: 12 times per day
+- **Cron**: `0 */4 * * *` — every 4 hours (00:00, 04:00, … UTC)
+- **Crawl budget**: 3 hours (`--max-seconds 10800`), leaving room within the
+  4-hour gap to archive and upload the database
+- **Job timeout**: 330 minutes, under the 6-hour hard limit for a job
+- **Concurrency**: the `wikipedia-scraper` group ensures two crawls never run at
+  once, which would fork the database and race on `state/scraper_state.dat`
 
-### Workflow Steps
+## Where state lives
 
-1. **Checkout Repository**
-   - Uses `actions/checkout@v4`
-   - Fetches the full repository history
+| Data | Size | Where it lives |
+| --- | --- | --- |
+| `state/url_state_db/` (RocksDB) | GBs | Actions cache (`url-state-v1-<run_id>`) |
+| `state/scraper_state.dat` | ~120 B | Committed to git |
+| `scraper_results.txt` | ~260 B | Committed to git |
 
-2. **Setup Python**
-   - Uses `actions/setup-python@v5`
-   - Installs latest Python 3.x
+The database is **not** committed. It was 1.13 GB back in February 2026 and grows
+with every run; committing it would balloon a repository whose history is already
+~7.6 GB.
 
-3. **Run Scraper**
-   - Attempts to resume from saved state: `python scraper.py --wikipedia --resume 50`
-   - If no state exists, starts fresh: `python scraper.py --wikipedia 50`
-   - Scrapes 50 pages per run to stay within CI time limits
+Cache entries use a unique per-run key (`url-state-v1-${{ github.run_id }}`) so
+the save at the end of a run never collides, and `restore-keys: url-state-v1-`
+picks up the newest previous entry. After a successful save, older entries are
+deleted so the multi-GB archives do not churn against the 10 GB per-repository
+cache quota.
 
-4. **Commit Results**
-   - Configures Git with bot credentials
-   - Commits `state/scraper_state.json` and `scraper_results.txt`
-   - Pushes changes back to the repository
-   - Uses `[skip ci]` to prevent triggering another workflow run
+### Cache misses
 
-## Benefits
+Actions caches are evicted after 7 days without access, and on eviction the crawl
+loses its URL frontier. When that happens the run still resumes: `--resume` with
+a surviving `state/scraper_state.dat` but no database re-seeds the start URL and
+carries on, preserving the cumulative page and URL totals rather than resetting
+them to zero.
 
-- **Continuous Data Collection**: Builds a dataset over time without manual intervention
-- **Resume Support**: Each run continues from where the previous run left off
-- **Data Preservation**: All scraped data is version controlled
-- **No Infrastructure Cost**: Runs entirely on GitHub's free runners
-- **Manual Override**: Can be triggered manually from GitHub Actions UI
+## Workflow steps
 
-## Files Managed by CI
+1. **Checkout** — `fetch-depth: 1`. A shallow clone is essential: the history is
+   ~7.6 GB of legacy state dumps while the tip tree is a handful of source files.
+2. **Free up runner disk space** — removes preinstalled toolchains to make room
+   for the database, its archive, and RocksDB compaction scratch space.
+3. **Install dependencies** — `libcurl4-openssl-dev`, `librocksdb-dev`, `zstd`.
+4. **Build** — the scraper, the URL state manager test (which is run), and
+   `extract_urls` as a compile check.
+5. **Restore / unpack URL database** — from the Actions cache.
+6. **Run scraper** — `--resume` when `state/scraper_state.dat` exists, otherwise
+   a fresh `--wikipedia` crawl.
+7. **Pack / save URL database** — runs on `always()`, so a crawl that fails or
+   times out still persists its progress. RocksDB writes with `sync=true`, so the
+   live database recovers from its WAL on the next open.
+8. **Prune superseded caches** — gated on the save succeeding, so a failed save
+   can never delete the last good database.
+9. **Commit and push results** — only the two small text files, with rebase and
+   retry so a concurrent push does not lose the run.
 
-- **`state/scraper_state.json`**: Current state of the scraper (visited/queued URLs, statistics)
-- **`scraper_results.txt`**: Human-readable list of all scraped URLs
+## Manual triggering
 
-## Monitoring
+From the Actions tab, "Wikipedia Scraper" → "Run workflow". Inputs:
 
-To monitor the scraper:
-1. Go to the "Actions" tab in the GitHub repository
-2. Select "Wikipedia Scraper" workflow
-3. View recent runs and their logs
-4. Check commit history to see when data was last updated
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `max_pages` | `100000` | Pages to scrape in this run |
+| `workers` | `5` | Parallel fetch workers |
+| `max_seconds` | `10800` | Wall-clock budget for the crawl |
+| `reset` | `false` | Discard the cached database and cumulative counters |
 
-## Manual Triggering
+## Relationship to the VPS crawler
 
-To manually trigger the scraper:
-1. Go to the "Actions" tab
-2. Select "Wikipedia Scraper" workflow
-3. Click "Run workflow" button
-4. Select the branch and click "Run workflow"
-
-## Configuration
-
-To modify the scraper behavior, edit `.github/workflows/scraper.yml`:
-- Change cron schedule for different frequency
-- Adjust page limit (currently 50) per run
-- Modify commit message or file paths
+`web-scraper.server` provisions a VPS that runs the same crawler continuously
+under systemd and pushes `Auto-update:` commits. It holds its own RocksDB, which
+is gitignored and therefore never shared with CI. If both run at once they crawl
+independently and overwrite each other's `state/scraper_state.dat`; the totals in
+that file then reflect whichever pushed last, not the combined crawl. Run one or
+the other unless you intend that.

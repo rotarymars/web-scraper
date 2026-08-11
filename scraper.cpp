@@ -38,7 +38,7 @@ using UrlSet = std::unordered_set<std::string>;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-static constexpr double MAX_EXECUTION_TIME = 12600.0; // 3.5 hours
+static constexpr double DEFAULT_MAX_EXECUTION_TIME = 12600.0; // 3.5 hours
 
 static const fs::path   STATE_DIR       {"state"};
 static const fs::path   STATE_FILE      = STATE_DIR / "scraper_state.dat";
@@ -373,7 +373,7 @@ struct ScrapeResult {
 };
 
 static ScrapeResult scrape(const std::string& startUrl, int maxPages,
-                            bool resume, int numWorkers) {
+                            bool resume, int numWorkers, double maxSeconds) {
     // For fresh starts, remove any previous RocksDB data
     if (!resume) {
         std::error_code ec;
@@ -535,18 +535,35 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             std::chrono::steady_clock::now() - sessionStart).count();
     };
 
-    double maxH = MAX_EXECUTION_TIME / 3600.0;
+    double maxH = maxSeconds / 3600.0;
     std::cout << "Starting web scraper from: " << actualStartUrl << '\n'
-              << "Max execution time: " << static_cast<int>(MAX_EXECUTION_TIME)
+              << "Max execution time: " << static_cast<int>(maxSeconds)
               << " seconds (" << maxH << " hour" << (maxH != 1.0 ? "s" : "") << ")\n"
               << "Max pages: " << maxPages << '\n'
               << std::string(80, '-') << '\n';
 
-    if (resume && toVisitQueue.empty())
-        std::cout << "\nWarning: No URLs in queue to scrape!\n"
-                  << "The scraper has already visited all discoverable URLs from the start URL.\n"
-                  << "Scraping cannot continue without URLs in the queue.\n"
-                  << std::string(80, '-') << '\n';
+    // A resume can land on an empty queue in two very different situations:
+    //
+    //   1. The URL database was lost (e.g. a CI cache miss) while the metadata
+    //      state file survived.  Nothing is known about the start URL, so we
+    //      re-seed it and the crawl restarts instead of idling forever.
+    //   2. The crawl genuinely exhausted every URL reachable from the start URL,
+    //      in which case the start URL is already recorded and we only warn.
+    if (resume && toVisitQueue.empty()) {
+        if (!actualStartUrl.empty() && !urlMgr.exists(actualStartUrl)) {
+            std::cout << "\nQueue is empty and the start URL is unknown to the "
+                         "database (state was lost).\n"
+                      << "Re-seeding from: " << actualStartUrl << '\n'
+                      << std::string(80, '-') << '\n';
+            urlMgr.checkAndSet(actualStartUrl, UrlState::DISCOVERED);
+            toVisitQueue.push(actualStartUrl);
+        } else {
+            std::cout << "\nWarning: No URLs in queue to scrape!\n"
+                      << "The scraper has already visited all discoverable URLs from the start URL.\n"
+                      << "Scraping cannot continue without URLs in the queue.\n"
+                      << std::string(80, '-') << '\n';
+        }
+    }
 
     ThreadPool pool(numWorkers);
 
@@ -558,7 +575,7 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
     ProgressBar pbar(static_cast<std::size_t>(runTarget), "Scraping");
 
     while (!toVisitQueue.empty()) {
-        if (elapsed() > MAX_EXECUTION_TIME) {
+        if (elapsed() > maxSeconds) {
             std::cout << "\nSession execution time limit reached (" << elapsed() << " seconds)\n";
             break;
         }
@@ -665,6 +682,7 @@ int main(int argc, char* argv[]) {
     bool        useWiki    = false;
     int         maxPages   = 100;
     int         numWorkers = 5;
+    double      maxSeconds = DEFAULT_MAX_EXECUTION_TIME;
     std::string startUrl;
 
     for (size_t i = 0; i < args.size(); ++i) {
@@ -682,6 +700,7 @@ int main(int argc, char* argv[]) {
                 "  max_pages         Maximum number of pages to scrape (default: 100)\n"
                 "  --resume          Resume from saved state\n"
                 "  --workers N       Number of parallel fetch workers (default: 5)\n"
+                "  --max-seconds N   Wall-clock budget for this run (default: 12600)\n"
                 "  --help, -h        Show this help message\n\n"
                 "Examples:\n"
                 "  scraper --wikipedia 50\n"
@@ -692,6 +711,11 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (a == "--workers" && i + 1 < args.size()) {
             try { numWorkers = std::stoi(args[++i]); } catch (...) {}
+        } else if (a == "--max-seconds" && i + 1 < args.size()) {
+            try {
+                double v = std::stod(args[++i]);
+                if (v > 0) maxSeconds = v;
+            } catch (...) {}
         } else if (!a.empty() && a[0] != '-') {
             bool isNumber = std::all_of(a.begin(), a.end(), ::isdigit);
             if (isNumber) maxPages = std::stoi(a);
@@ -724,7 +748,7 @@ int main(int argc, char* argv[]) {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    auto result = scrape(startUrl, maxPages, resume, numWorkers);
+    auto result = scrape(startUrl, maxPages, resume, numWorkers, maxSeconds);
 
     curl_global_cleanup();
 
