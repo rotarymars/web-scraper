@@ -1,5 +1,5 @@
 /*
- * Web Scraper - Iterative URL crawler with regex-based link extraction
+ * Web Scraper - Iterative URL crawler with linear-scan link extraction
  *
  * Prerequisites (Ubuntu/Debian):
  *   sudo apt-get install libcurl4-openssl-dev libzip-dev
@@ -19,7 +19,6 @@
 #include <mutex>
 #include <deque>
 #include <queue>
-#include <regex>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -53,19 +52,6 @@ static const std::string USER_AGENT =
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/58.0.3029.110 Safari/537.3";
 
-// ── Pre-compiled regexes ──────────────────────────────────────────────────────
-
-// href=["']...["']  /  src=["']...["']
-static const std::regex RE_HREF{
-    R"re(href=["']([^"']+)["'])re",
-    std::regex::icase | std::regex::optimize};
-static const std::regex RE_SRC{
-    R"re(src=["']([^"']+)["'])re",
-    std::regex::icase | std::regex::optimize};
-// Bare absolute URLs embedded in HTML; second char-class trims trailing punctuation
-static const std::regex RE_URL{
-    R"re(https?://[^\s<>"{}|\\^`\[\]]+[^\s<>"{}|\\^`\[\].,;:!?'"\)])re",
-    std::regex::icase | std::regex::optimize};
 
 // ── Thread pool ───────────────────────────────────────────────────────────────
 
@@ -204,37 +190,87 @@ static std::string resolveUrl(const std::string& base, const std::string& rel) {
     return scheme + "://" + host + dir + rel;
 }
 
+// Case-insensitive check that `hay` contains `needle` at `pos`.
+static bool matchesAt(const std::string& hay, std::size_t pos, std::string_view needle) {
+    if (pos + needle.size() > hay.size()) return false;
+    for (std::size_t i = 0; i < needle.size(); ++i) {
+        char a = hay[pos + i], b = needle[i];
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return true;
+}
+
+// URL extraction is a hand-written linear scan rather than std::regex.
+//
+// libstdc++'s std::regex recurses once per character while matching, so a
+// single match longer than ~100k blows the stack and kills the process with
+// SIGSEGV -- which is exactly how a CI run died on a page with an enormous
+// quoted attribute.  Bounding the *input* cannot fix it either: the href
+// pattern's [^"']+ accepts whitespace, so only a quote terminates a match and
+// injecting one would corrupt the markup.  A scanner has no recursion at all,
+// takes an explicit length cap, and is considerably faster.
 static UrlSet extractUrls(const std::string& raw, const std::string& baseUrl) {
     UrlSet urls;
 
-    // std::regex::icase calls std::toupper/tolower on every character.
-    // Those functions are only defined for values in [0, UCHAR_MAX] or EOF;
-    // on platforms where char is signed, bytes >= 0x80 arrive as negative
-    // ints, which is undefined behaviour and causes SIGSEGV on glibc.
-    // Sanitise the page once up-front: replace every non-ASCII byte (>= 0x80)
-    // and every null byte with a plain space.  ASCII URLs are unaffected.
+    // Non-ASCII and NUL bytes become spaces: the old icase regex passed them to
+    // std::tolower as negative ints (undefined, and a SIGSEGV on glibc).  The
+    // scanner does not need this, but it also keeps URLs plain ASCII.
     std::string html;
     html.reserve(raw.size());
     for (unsigned char c : raw)
         html += (c == 0 || c >= 0x80) ? ' ' : static_cast<char>(c);
 
-    // href and src attributes → resolve relative URLs
-    for (const auto& re : {std::cref(RE_HREF), std::cref(RE_SRC)}) {
-        auto begin = std::sregex_iterator(html.begin(), html.end(), re.get());
-        for (auto it = begin; it != std::sregex_iterator(); ++it) {
-            std::string resolved = resolveUrl(baseUrl, (*it)[1].str());
-            if (isValidHttpUrl(resolved))
-                urls.insert(std::move(resolved));
+    // Longest URL we will accept; anything longer is skipped, not truncated,
+    // since a truncated URL is a different (and probably invalid) resource.
+    static constexpr std::size_t MAX_URL_LEN = 8192;
+
+    // ── href="..." / src="..." ───────────────────────────────────────────────
+    for (std::string_view attr : {std::string_view("href="), std::string_view("src=")}) {
+        for (std::size_t i = 0; i + attr.size() < html.size(); ++i) {
+            if (!matchesAt(html, i, attr)) continue;
+            std::size_t v = i + attr.size();
+            if (v >= html.size()) break;
+            char quote = html[v];
+            if (quote != '"' && quote != '\'') continue;   // unquoted: skip
+            std::size_t close = html.find(quote, v + 1);
+            if (close == std::string::npos) continue;
+            std::size_t len = close - v - 1;
+            i = close;                                     // resume after the value
+            if (len == 0 || len > MAX_URL_LEN) continue;
+            std::string resolved = resolveUrl(baseUrl, html.substr(v + 1, len));
+            if (isValidHttpUrl(resolved)) urls.insert(std::move(resolved));
         }
     }
 
-    // Bare absolute URLs embedded in the markup; normalise scheme to lowercase
-    // and validate before inserting (RE_URL uses icase so "Https://" would match).
-    auto begin = std::sregex_iterator(html.begin(), html.end(), RE_URL);
-    for (auto it = begin; it != std::sregex_iterator(); ++it) {
-        std::string u = normalizeScheme((*it)[0].str());
-        if (isValidHttpUrl(u))
-            urls.insert(std::move(u));
+    // ── bare http(s):// URLs in the markup ───────────────────────────────────
+    auto isTerminator = [](char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '<' || c == '>' ||
+               c == '"' || c == '\'' || c == '{' || c == '}' || c == '|' ||
+               c == '\\' || c == '^' || c == '`' || c == '[' || c == ']';
+    };
+    // Trailing punctuation is usually prose, not part of the URL.
+    auto isTrailingPunct = [](char c) {
+        return c == '.' || c == ',' || c == ';' || c == ':' || c == '!' ||
+               c == '?' || c == ')' || c == '\'' || c == '"';
+    };
+    for (std::size_t i = 0; i < html.size(); ++i) {
+        if (html[i] != 'h' && html[i] != 'H') continue;
+        std::size_t schemeLen = 0;
+        if      (matchesAt(html, i, "http://"))  schemeLen = 7;
+        else if (matchesAt(html, i, "https://")) schemeLen = 8;
+        else continue;
+
+        std::size_t j = i + schemeLen;
+        while (j < html.size() && !isTerminator(html[j])) ++j;
+        std::size_t end = j;
+        while (end > i + schemeLen && isTrailingPunct(html[end - 1])) --end;
+
+        std::size_t len = end - i;
+        if (len <= schemeLen || len > MAX_URL_LEN) { i = j; continue; }
+        std::string u = normalizeScheme(html.substr(i, len));
+        if (isValidHttpUrl(u)) urls.insert(std::move(u));
+        i = j;                                             // resume past this URL
     }
 
     return urls;
