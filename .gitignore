@@ -39,7 +39,10 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Compiled binaries; build them from source with the command in each file's header.
 scraper
+extract_urls
+
 _codeql_detected_source_root
 
 scraped.txt
