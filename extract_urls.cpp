@@ -19,23 +19,31 @@
  * ── Why --clean exists ───────────────────────────────────────────────────────
  *
  * The store is a faithful record of what the crawler resolved, which is not the
- * same as a list of URLs worth having.  Three kinds of entry are junk:
+ * same as a list of URLs worth having.  Two kinds of entry are not URLs at all:
  *
- *   1. Unbounded redirect chains.  A URL like
- *        accounts.google.com/AccountChooser?continue=...%2525253Dtrue...
- *      re-escapes its own query string every time it is crawled, so it grows
- *      without bound.  In the visited set these were ~8% of lines but ~65% of
- *      the bytes.  --max-length is what actually cuts them.
- *
- *   2. Template placeholders that resolveUrl() turned into absolute URLs:
+ *   1. Template placeholders that resolveUrl() turned into absolute URLs:
  *      "http://$1", "http://%%sponsor_url%%", "http://#".  These were never
  *      links; they are unsubstituted markup from the source page.
  *
- *   3. Fragments.  A stored URL containing a raw newline is written across two
+ *   2. Fragments.  A stored URL containing a raw newline is written across two
  *      lines and reads back as two records, the second of which is a tail like
  *      "&noscript=1".  Rejecting anything without a valid scheme+host drops it.
  *
- * Without --clean the output is byte-for-byte what the store holds.
+ * --clean rejects both on structure alone, so it never drops a well-formed URL.
+ * Without it the output is byte-for-byte what the store holds.
+ *
+ * ── Long URLs are NOT filtered by default ────────────────────────────────────
+ *
+ * Some entries are enormous: a URL like
+ *   accounts.google.com/AccountChooser?continue=...%2525253Dtrue...
+ * re-escapes its own query string every time it is crawled, so it grows without
+ * bound.  In the visited set these ran to 8 KB and were ~8% of the lines but
+ * ~65% of the bytes.
+ *
+ * They are still well-formed URLs, so --clean keeps them.  Discarding them
+ * needs an explicit --max-length, because any threshold is a guess: there is no
+ * length at which a URL stops being real, only one past which it is unlikely to
+ * be.  Choosing that number is the caller's call, not this tool's.
  */
 
 #include "progress_bar.hpp"
@@ -53,12 +61,6 @@
 
 namespace fs = std::filesystem;
 
-/// Length beyond which a URL is assumed to be a runaway redirect chain rather
-/// than a real address.  Applied only under --clean; override with
-/// --max-length.  The longest legitimate-looking URL observed in the store is
-/// well under 1 KB, while the runaway ones run to 8 KB+.
-static constexpr std::size_t CLEAN_MAX_LENGTH = 2000;
-
 static void usage(const char* prog) {
     std::cout <<
         "Usage: " << prog << " [OPTIONS]\n\n"
@@ -68,9 +70,10 @@ static void usage(const char* prog) {
         "  --all            Output both sets\n"
         "  --output FILE    Write to FILE instead of stdout\n"
         "  --store PATH     Store root directory (default: urls)\n"
-        "  --clean          Drop malformed entries and runaway redirect chains\n"
-        "  --max-length N   Drop URLs longer than N bytes\n"
-        "                   (default: unlimited, or " << CLEAN_MAX_LENGTH << " under --clean)\n"
+        "  --clean          Drop entries that are not well-formed http(s) URLs\n"
+        "  --max-length N   Drop URLs longer than N bytes (default: unlimited).\n"
+        "                   Runaway redirect chains reach 8 KB+; nothing is cut\n"
+        "                   on length unless you ask for it.\n"
         "  --help, -h       Show this message\n";
 }
 
@@ -131,7 +134,6 @@ int main(int argc, char* argv[]) {
     bool        doToVisit = false;
     bool        clean     = false;
     std::size_t maxLength = 0;            // 0 = unlimited
-    bool        maxLengthSet = false;
     std::string outputFile;
     fs::path    storeRoot = "urls";
 
@@ -152,7 +154,6 @@ int main(int argc, char* argv[]) {
         } else if (a == "--max-length" && i + 1 < argc) {
             try {
                 maxLength = static_cast<std::size_t>(std::stoull(argv[++i]));
-                maxLengthSet = true;
             } catch (const std::exception&) {
                 std::cerr << "Error: --max-length needs a number\n";
                 return 1;
@@ -168,7 +169,6 @@ int main(int argc, char* argv[]) {
     }
 
     if (!doVisited && !doToVisit) doVisited = true;
-    if (clean && !maxLengthSet)   maxLength = CLEAN_MAX_LENGTH;
 
     const fs::path visitedDir = storeRoot / "visited";
     const fs::path queueDir   = storeRoot / "queue";
