@@ -171,9 +171,15 @@ jobs:
           CORPUS_MAX_AGE_SECONDS: '86400'
           FRONTIER_CAP: '500000'
         run: |
-          newest=$(git log -1 --format=%ct -- 'state/scraper_state_visited_*.txt' 2>/dev/null || echo 0)
-          age=$(( $(date +%s) - ${newest:-0} ))
-          if [ "${newest:-0}" -ne 0 ] && [ "$age" -lt "$CORPUS_MAX_AGE_SECONDS" ]; then
+          # The age is read from a committed marker rather than from git log.
+          # The job uses a shallow clone, where the tip commit has no parent, so
+          # git reports every file as introduced by it -- `git log -1 -- <corpus>`
+          # would return the tip's time. Every run commits counters, so the tip is
+          # always minutes old and the corpus would never be refreshed again.
+          newest=$(cat state/corpus_refreshed_at 2>/dev/null || echo 0)
+          case "$newest" in ''|*[!0-9]*) newest=0 ;; esac
+          age=$(( $(date +%s) - newest ))
+          if [ "$newest" -ne 0 ] && [ "$age" -lt "$CORPUS_MAX_AGE_SECONDS" ]; then
             echo "Corpus is $((age/3600))h old; not refreshing this run."
             echo "refreshed=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -201,6 +207,7 @@ jobs:
           chunk visited.txt  state/scraper_state_visited_
           chunk frontier.txt state/scraper_state_to_visit_
           rm -f visited.txt frontier.txt frontier_full.txt
+          date +%s > state/corpus_refreshed_at
           echo "visited chunks : $(ls state/scraper_state_visited_*.txt 2>/dev/null | wc -l)"
           echo "frontier chunks: $(ls state/scraper_state_to_visit_*.txt 2>/dev/null | wc -l)"
           echo "refreshed=true" >> "$GITHUB_OUTPUT"
@@ -274,10 +281,13 @@ jobs:
           if [ "$CORPUS_REFRESHED" = "true" ]; then
             # -A so chunks that vanish as the corpus re-splits are staged as
             # deletions rather than lingering as stale files.
-            git add -A -- 'state/scraper_state_visited_*.txt' 'state/scraper_state_to_visit_*.txt'
+            git add -A -- 'state/scraper_state_visited_*.txt' \
+                          'state/scraper_state_to_visit_*.txt' \
+                          state/corpus_refreshed_at
           else
             git checkout -- 'state/scraper_state_visited_*.txt' \
-                            'state/scraper_state_to_visit_*.txt' 2>/dev/null || true
+                            'state/scraper_state_to_visit_*.txt' \
+                            state/corpus_refreshed_at 2>/dev/null || true
           fi
           for attempt in 1 2 3; do
             git add state/scraper_state.dat scraper_results.txt
