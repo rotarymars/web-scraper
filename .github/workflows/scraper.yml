@@ -21,7 +21,7 @@ on:
         required: false
         default: '10800'
       reset:
-        description: 'Discard the cached URL database and crawl from scratch'
+        description: 'Discard the whole URL store and crawl from scratch'
         type: boolean
         required: false
         default: false
@@ -31,14 +31,11 @@ on:
         required: false
         default: true
 
-# Never let two crawls run at once: they would fork the URL database and race
-# each other pushing state/scraper_state.dat.
+# Never let two crawls run at once: they would write conflicting chunks and
+# race each other pushing to main.
 concurrency:
   group: wikipedia-scraper
   cancel-in-progress: false
-
-env:
-  CACHE_PREFIX: url-state-v1
 
 jobs:
   scrape:
@@ -47,11 +44,11 @@ jobs:
 
     permissions:
       contents: write
-      actions: write   # required to prune superseded caches
+      actions: write   # required to dispatch the successor run
 
     steps:
-      # Shallow: nothing here needs history, and the corpus chunks make each
-      # tree non-trivial even though the history itself is now small.
+      # The full checkout is the crawl state: urls/ holds every known URL as
+      # immutable zip chunks.  depth=1 keeps the clone to the current tree only.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -61,236 +58,71 @@ jobs:
       - name: Record start time
         run: echo "RUN_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Free up runner disk space
-        run: |
-          echo "Before:"; df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
-          echo "After:"; df -h /
-
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev librocksdb-dev zstd
+          sudo apt-get install -y libcurl4-openssl-dev libzip-dev
 
       - name: Build scraper
-        run: g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lrocksdb -o scraper
+        run: g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lzip -o scraper
 
-      - name: Build and test URL state manager
+      - name: Show store before the crawl
         run: |
-          g++ -std=c++23 -O2 -Wall -pthread url_state_manager_test.cpp -lrocksdb -o url_state_manager_test
-          ./url_state_manager_test
-
-      - name: Build extract_urls tool
-        run: g++ -std=c++23 -O2 -Wall extract_urls.cpp -lrocksdb -o extract_urls
-
-      # The URL database is far too large to commit (1.1 GB back in February and
-      # still growing), so it is carried between runs in the Actions cache.
-      # The run-id key is always unique, so the save at the end never collides;
-      # restore-keys picks up the most recent previous run.
-      - name: Restore URL database
-        id: restore
-        if: ${{ inputs.reset != true }}
-        uses: actions/cache/restore@v4
-        with:
-          path: state/url_state.tar.zst
-          key: ${{ env.CACHE_PREFIX }}-${{ github.run_id }}
-          restore-keys: ${{ env.CACHE_PREFIX }}-
-
-      - name: Unpack URL database
-        id: unpack
-        env:
-          RESET: ${{ inputs.reset }}
-        run: |
-          if [ -f state/url_state.tar.zst ]; then
-            echo "Restored archive: $(du -h state/url_state.tar.zst | cut -f1)"
-            tar -x -I zstd -f state/url_state.tar.zst
-            rm -f state/url_state.tar.zst
-          fi
-          if [ "$RESET" = "true" ]; then
-            echo "Reset requested; discarding database and cumulative counters."
-            rm -rf state/url_state_db state/url_state_db_checkpoint state/scraper_state.dat
+          v=$(ls urls/visited/*.zip 2>/dev/null | wc -l)
+          q=$(ls urls/queue/*.zip 2>/dev/null | wc -l)
+          echo "visited chunks: $v   queue chunks: $q   on disk: $(du -sh urls 2>/dev/null | cut -f1)"
+          if [ "$v" -eq 0 ] && [ "$q" -eq 0 ]; then
+            echo "::warning::No URL chunks in the checkout; the crawl will start from the seed URL."
           fi
 
-          # On a reset, drop the committed corpus too, otherwise the scraper
-          # would immediately re-import it and the reset would do nothing.
-          if [ "$RESET" = "true" ]; then
-            rm -f state/scraper_state_visited_*.txt state/scraper_state_to_visit_*.txt
-          fi
-
-          if [ -f state/url_state_db/CURRENT ]; then
-            echo "Live database ready: $(du -sh state/url_state_db | cut -f1)"
-          else
-            v=$(ls state/scraper_state_visited_*.txt 2>/dev/null | wc -l)
-            q=$(ls state/scraper_state_to_visit_*.txt 2>/dev/null | wc -l)
-            if [ "$v" -gt 0 ] || [ "$q" -gt 0 ]; then
-              echo "No database; the scraper will rebuild it from the committed"
-              echo "corpus ($v visited chunk(s), $q frontier chunk(s)) — takes about a minute."
-            else
-              echo "No database and no corpus; the crawl re-seeds from the start URL."
-            fi
-          fi
-          # Resume whenever cumulative metadata survives, even without a
-          # database: the scraper re-seeds the start URL in that case, which
-          # keeps the running page/URL totals intact across a cache miss.
-          if [ -f state/scraper_state.dat ]; then
-            echo "resume=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "resume=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # The crawl budget keeps the run comfortably inside the 6h job limit,
-      # leaving room to archive and upload a multi-GB database afterwards.
+      # There is no cache and no database: the repository IS the state.  The
+      # scraper loads every chunk, crawls, and writes only NEW chunks.
       - name: Run scraper
         id: scrape
         env:
-          RESUME: ${{ steps.unpack.outputs.resume }}
           MAX_PAGES: ${{ inputs.max_pages || '100000' }}
           WORKERS: ${{ inputs.workers || '5' }}
           MAX_SECONDS: ${{ inputs.max_seconds || '10800' }}
+          RESET: ${{ inputs.reset }}
         run: |
-          if [ "$RESUME" = "true" ]; then
-            ./scraper --resume "$MAX_PAGES" --workers "$WORKERS" --max-seconds "$MAX_SECONDS"
-          else
+          if [ "$RESET" = "true" ]; then
+            echo "Reset requested; discarding the store and starting fresh."
+            rm -rf urls state/scraper_state.dat
             ./scraper --wikipedia "$MAX_PAGES" --workers "$WORKERS" --max-seconds "$MAX_SECONDS"
+          else
+            ./scraper --resume "$MAX_PAGES" --workers "$WORKERS" --max-seconds "$MAX_SECONDS"
           fi
 
-      # The crawled-URL corpus is the durable product, so it lives in git as
-      # plain sorted text rather than only in the evictable cache.  The chunk
-      # names are the ones the scraper already imports on a cache miss, so
-      # recovery needs no extra code.
-      #
-      # Refreshed at most once a day: the corpus is rewritten wholesale each
-      # time, and committing it every run costs ~5 GB/year of history against
-      # ~1.8 GB/year at this cadence.  The cache carries state between runs, so
-      # a day-old corpus only ever costs re-crawl time after a cache loss.
-      - name: Export URL corpus
-        id: corpus
-        if: ${{ always() && steps.scrape.outcome == 'success' }}
-        env:
-          CORPUS_MAX_AGE_SECONDS: '86400'
-          FRONTIER_CAP: '500000'
+      # Chunks are immutable once committed, so a run only ever ADDS files.
+      # Guard that invariant here: if a tracked chunk was modified or deleted,
+      # something is wrong and committing it would corrupt the store.
+      - name: Verify chunk immutability
+        if: always() && steps.scrape.outcome == 'success'
         run: |
-          # The age is read from a committed marker rather than from git log.
-          # The job uses a shallow clone, where the tip commit has no parent, so
-          # git reports every file as introduced by it -- `git log -1 -- <corpus>`
-          # would return the tip's time. Every run commits counters, so the tip is
-          # always minutes old and the corpus would never be refreshed again.
-          newest=$(cat state/corpus_refreshed_at 2>/dev/null || echo 0)
-          case "$newest" in ''|*[!0-9]*) newest=0 ;; esac
-          age=$(( $(date +%s) - newest ))
-          if [ "$newest" -ne 0 ] && [ "$age" -lt "$CORPUS_MAX_AGE_SECONDS" ]; then
-            echo "Corpus is $((age/3600))h old; not refreshing this run."
-            echo "refreshed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          rm -f state/scraper_state_visited_*.txt state/scraper_state_to_visit_*.txt
-          ./extract_urls --visited  --output visited.txt
-          ./extract_urls --to-visit --output frontier_full.txt
-          # Cap the frontier: the full queue is tens of millions of URLs and
-          # belongs in the cache.  This slice only has to give a cache-miss
-          # recovery enough to crawl from, since crawling regrows the rest.
-          head -n "$FRONTIER_CAP" frontier_full.txt > frontier.txt
-          # GitHub rejects files over 100 MB; keep chunks well under.
-          # The scraper scans for <prefix>0.txt, <prefix>1.txt ... and stops at
-          # the first gap, so the suffixes must be unpadded and contiguous —
-          # split's own zero-padded names (_000) would match nothing.
-          chunk() {
-            src="$1"; prefix="$2"; i=0
-            split -C 95m -d -a 4 "$src" "${prefix}part_"
-            for f in "${prefix}"part_*; do
-              [ -e "$f" ] || continue
-              mv "$f" "${prefix}${i}.txt"
-              i=$((i + 1))
-            done
-          }
-          chunk visited.txt  state/scraper_state_visited_
-          chunk frontier.txt state/scraper_state_to_visit_
-          rm -f visited.txt frontier.txt frontier_full.txt
-          date +%s > state/corpus_refreshed_at
-          echo "visited chunks : $(ls state/scraper_state_visited_*.txt 2>/dev/null | wc -l)"
-          echo "frontier chunks: $(ls state/scraper_state_to_visit_*.txt 2>/dev/null | wc -l)"
-          echo "refreshed=true" >> "$GITHUB_OUTPUT"
-
-      # Runs even when the crawl fails or times out. RocksDB writes with
-      # sync=true, so the live database is recoverable from its WAL on the next
-      # open; a partial run therefore still moves the crawl forward.
-      - name: Pack URL database
-        if: always()
-        id: pack
-        run: |
-          if [ ! -f state/url_state_db/CURRENT ]; then
-            echo "No database to persist."
-            echo "packed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # The checkpoint is a hard-linked snapshot of the live DB and adds no
-          # useful information to the archive.
-          rm -rf state/url_state_db_checkpoint
-          tar -c -I 'zstd -3 -T0' -f state/url_state.tar.zst state/url_state_db
-          size=$(stat -c %s state/url_state.tar.zst)
-          echo "Archive: $(numfmt --to=iec "$size")"
-          # The per-repository cache quota is 10 GB; refuse to push an archive
-          # that would evict itself rather than failing opaquely later.
-          if [ "$size" -gt $((9 * 1024 * 1024 * 1024)) ]; then
-            echo "::error::URL database archive exceeds the 10 GB Actions cache quota."
-            echo "packed=false" >> "$GITHUB_OUTPUT"
+          changed=$(git diff --name-only --diff-filter=MD -- urls/ | head -20)
+          if [ -n "$changed" ]; then
+            echo "::error::Existing chunks were modified or deleted:"
+            echo "$changed"
             exit 1
           fi
-          echo "packed=true" >> "$GITHUB_OUTPUT"
+          added=$(git ls-files --others --exclude-standard -- urls/ | wc -l)
+          echo "New chunks this run: $added"
+          if [ "$added" -gt 0 ]; then
+            git ls-files --others --exclude-standard -- urls/ | head -10
+            echo "Largest new chunk:"
+            git ls-files --others --exclude-standard -- urls/ \
+              | xargs -r stat -c '%s %n' | sort -rn | head -1 \
+              | awk '{printf "  %.1f MB  %s\n", $1/1048576, $2}'
+          fi
 
-      - name: Save URL database
-        id: save
-        if: always() && steps.pack.outputs.packed == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: state/url_state.tar.zst
-          key: ${{ env.CACHE_PREFIX }}-${{ github.run_id }}
-
-      # Each run writes a multi-GB entry, so without pruning the 10 GB quota
-      # evicts entries in an order we do not control.  Gated on the save having
-      # succeeded, and keyed by name rather than position, so a failed save can
-      # never delete the last good database.
-      - name: Prune superseded caches
-        if: always() && steps.save.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEEP_KEY: ${{ env.CACHE_PREFIX }}-${{ github.run_id }}
-        run: |
-          gh cache list --key "$CACHE_PREFIX-" --limit 100 --json id,key \
-            | jq -r --arg keep "$KEEP_KEY" '.[] | select(.key != $keep) | .id' \
-            | while read -r id; do
-                echo "Deleting superseded cache $id"
-                gh cache delete "$id" || true
-              done
-
-      # Only the small human-readable summaries are committed; the database
-      # itself stays in the cache.
       - name: Commit and push results
         if: always()
-        env:
-          CORPUS_REFRESHED: ${{ steps.corpus.outputs.refreshed }}
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          # The scraper DELETES the corpus chunks once it has imported them, so
-          # staging those paths unconditionally would commit their deletion on
-          # any run that consumed them without re-exporting (a crawl that failed
-          # after import). Only stage the corpus when this run actually rebuilt
-          # it; otherwise restore whatever is committed.
-          if [ "$CORPUS_REFRESHED" = "true" ]; then
-            # -A so chunks that vanish as the corpus re-splits are staged as
-            # deletions rather than lingering as stale files.
-            git add -A -- 'state/scraper_state_visited_*.txt' \
-                          'state/scraper_state_to_visit_*.txt' \
-                          state/corpus_refreshed_at
-          else
-            git checkout -- 'state/scraper_state_visited_*.txt' \
-                            'state/scraper_state_to_visit_*.txt' \
-                            state/corpus_refreshed_at 2>/dev/null || true
-          fi
           for attempt in 1 2 3; do
             git add state/scraper_state.dat scraper_results.txt
+            git add -- urls/
             if git diff --staged --quiet; then
               echo "No changes to commit"
               exit 0
@@ -300,11 +132,10 @@ jobs:
               echo "Pushed on attempt $attempt"
               exit 0
             fi
-            # Someone else (e.g. the VPS crawler) pushed first.  A rebase is not
-            # dependable on the shallow clone this job uses, so re-anchor onto
-            # the new remote tip instead: a mixed reset keeps our two modified
-            # files in the working tree while discarding any assumption about
-            # the rest of the tree, so the retry commits only our own changes.
+            # A rebase is not dependable on a shallow clone, so re-anchor onto
+            # the new remote tip instead.  Because chunks are immutable and
+            # named by sequence, a concurrent run can only have ADDED files;
+            # our own new chunks stay untracked across the reset and re-commit.
             echo "Push rejected; re-anchoring onto the current origin/$GITHUB_REF_NAME"
             git fetch --depth=1 --no-tags origin "$GITHUB_REF_NAME"
             git reset FETCH_HEAD
@@ -314,21 +145,16 @@ jobs:
 
       # Start the next crawl immediately instead of waiting for the cron.
       # A push made with GITHUB_TOKEN never triggers a workflow, so `on: push`
-      # cannot chain; workflow_dispatch is the documented exception to that
-      # rule, so the run dispatches its own successor.
+      # cannot chain; workflow_dispatch is the documented exception.
       #
-      # Only chains when the crawl itself succeeded, so a broken build or a
-      # failing crawl stops the chain rather than spinning.  The floor delay
-      # covers the remaining hot-loop case: a crawl that exits successfully in
-      # seconds (e.g. an exhausted queue) would otherwise re-dispatch flat out.
-      # Requires the cache save to have succeeded too: chaining after a failed
-      # save would send the next run back to the seed snapshot, silently
-      # discarding this run's crawling.  When that happens the cron picks it up.
+      # Only chains when the crawl succeeded, so a broken build or failing crawl
+      # stops the chain rather than spinning.  The floor delay covers a crawl
+      # that exits successfully in seconds (e.g. an exhausted frontier).
       - name: Chain the next run
         # `inputs.chain != false` would be wrong: on a scheduled run `inputs` is
         # null, and GitHub casts both null and false to 0, so it would compare
         # equal and the watchdog run would never restart the chain.
-        if: ${{ always() && steps.scrape.outcome == 'success' && steps.save.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.chain) }}
+        if: ${{ always() && steps.scrape.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.chain) }}
         env:
           GH_TOKEN: ${{ github.token }}
           MIN_CYCLE_SECONDS: '600'

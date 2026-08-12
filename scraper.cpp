@@ -2,10 +2,10 @@
  * Web Scraper - Iterative URL crawler with regex-based link extraction
  *
  * Prerequisites (Ubuntu/Debian):
- *   sudo apt-get install libcurl4-openssl-dev librocksdb-dev
+ *   sudo apt-get install libcurl4-openssl-dev libzip-dev
  *
  * Build:
- *   g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lrocksdb -o scraper
+ *   g++ -std=c++23 -O2 -Wall -pthread scraper.cpp -lcurl -lzip -o scraper
  */
 
 #include <algorithm>
@@ -17,6 +17,7 @@
 #include <future>
 #include <iostream>
 #include <mutex>
+#include <deque>
 #include <queue>
 #include <regex>
 #include <string>
@@ -31,7 +32,7 @@
 #include <curl/curl.h>
 
 #include "progress_bar.hpp"
-#include "url_state_manager.hpp"
+#include "url_store.hpp"
 
 namespace fs = std::filesystem;
 using UrlSet = std::unordered_set<std::string>;
@@ -42,8 +43,11 @@ static constexpr double DEFAULT_MAX_EXECUTION_TIME = 12600.0; // 3.5 hours
 
 static const fs::path   STATE_DIR       {"state"};
 static const fs::path   STATE_FILE      = STATE_DIR / "scraper_state.dat";
-static const fs::path   ROCKSDB_DIR     = STATE_DIR / "url_state_db";
-static const fs::path   CHECKPOINT_DIR  = STATE_DIR / "url_state_db_checkpoint";
+// All crawl state lives here as immutable zipped chunks (see url_store.hpp).
+static const fs::path   URLS_DIR        {"urls"};
+// New discoveries are crawlable in the same run, but only up to this many are
+// held in memory at once; the rest are persisted for a later run.
+static constexpr std::size_t MAX_INFLIGHT_WORK = 200000;
 static const std::string USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -111,100 +115,8 @@ private:
 
 // ── Migration helpers (used only when upgrading from the old chunk-file format) ─
 
-/// Read URLs from a plain-text chunk file (one URL per line).
-static std::vector<std::string> loadChunkFromTxt(const std::string& path) {
-    std::ifstream f(path);
-    if (!f) throw std::runtime_error("loadChunkFromTxt: cannot open " + path);
-    std::vector<std::string> result;
-    std::string line;
-    while (std::getline(f, line))
-        if (!line.empty()) result.push_back(std::move(line));
-    return result;
-}
 
-/// Read URLs from a legacy ZIP chunk file.
-/// Runs `unzip -p` via fork/execvp (no shell, no injection risk).
-/// The path is resolved to its canonical form and verified to remain inside
-/// STATE_DIR before the child process is created.
-static std::vector<std::string> loadChunkFromZip(const std::string& zipPath) {
-    // Resolve to a canonical (no symlinks, no "..") absolute path.
-    std::error_code ec;
-    fs::path canonical = fs::canonical(zipPath, ec);
-    if (ec)
-        throw std::runtime_error(
-            "loadChunkFromZip: cannot resolve '" + zipPath + "': " + ec.message());
 
-    // Ensure the resolved path is inside STATE_DIR (directory traversal guard).
-    fs::path stateAbs = fs::weakly_canonical(STATE_DIR);
-    auto rel = canonical.lexically_relative(stateAbs);
-    if (rel.empty() || (!rel.native().empty() && rel.native().rfind("..", 0) == 0))
-        throw std::runtime_error(
-            "loadChunkFromZip: path is outside state directory: " + zipPath);
-
-    // Create a pipe and run `unzip -p <file> urls.txt` in a child process.
-    // Using execvp avoids the shell entirely — no quoting, no injection.
-    int fd[2];
-    if (pipe(fd) != 0)
-        throw std::runtime_error("loadChunkFromZip: pipe() failed");
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(fd[0]); close(fd[1]);
-        throw std::runtime_error("loadChunkFromZip: fork() failed");
-    }
-    if (pid == 0) {
-        // Child: wire stdout → pipe write end, suppress stderr, exec unzip.
-        close(fd[0]);
-        if (dup2(fd[1], STDOUT_FILENO) < 0) _exit(1);
-        close(fd[1]);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        execlp("unzip", "unzip", "-p", canonical.c_str(), "urls.txt",
-               static_cast<char*>(nullptr));
-        _exit(1); // exec failed
-    }
-
-    // Parent: read lines from the pipe.
-    close(fd[1]);
-    std::vector<std::string> result;
-    {
-        FILE* f = fdopen(fd[0], "r");
-        if (f) {
-            char buf[4096];
-            std::string leftover;
-            while (fgets(buf, sizeof(buf), f)) {
-                leftover += buf;
-                size_t pos;
-                while ((pos = leftover.find('\n')) != std::string::npos) {
-                    std::string line = leftover.substr(0, pos);
-                    if (!line.empty()) result.push_back(std::move(line));
-                    leftover = leftover.substr(pos + 1);
-                }
-            }
-            if (!leftover.empty()) result.push_back(std::move(leftover));
-            fclose(f); // also closes fd[0]
-        } else {
-            close(fd[0]);
-        }
-    }
-    waitpid(pid, nullptr, 0);
-    return result;
-}
-
-/// Delete old ZIP and TXT chunk files left over from the migration.
-static void cleanupOldChunks() {
-    if (!fs::is_directory(STATE_DIR)) return;
-    for (const auto& e : fs::directory_iterator(STATE_DIR)) {
-        const std::string name = e.path().filename().string();
-        const std::string ext  = e.path().extension().string();
-        if ((ext == ".zip" || ext == ".txt") &&
-            (name.rfind("scraper_state_visited_",  0) == 0 ||
-             name.rfind("scraper_state_to_visit_", 0) == 0)) {
-            std::error_code ec;
-            fs::remove(e.path(), ec);
-        }
-    }
-}
 
 // State file format (state/scraper_state.dat):
 //   One "key value" pair per line.
@@ -374,45 +286,30 @@ struct ScrapeResult {
 
 static ScrapeResult scrape(const std::string& startUrl, int maxPages,
                             bool resume, int numWorkers, double maxSeconds) {
-    // For fresh starts, remove any previous RocksDB data
+    // For fresh starts, discard the entire chunk store.
     if (!resume) {
         std::error_code ec;
-        fs::remove_all(ROCKSDB_DIR,    ec);
-        fs::remove_all(CHECKPOINT_DIR, ec);
+        fs::remove_all(URLS_DIR, ec);
     }
 
-    // Auto-promote the checkpoint to the live DB location.
-    // This is the normal path after every successful run (locally and in CI):
-    // the checkpoint was committed to git and is now checked out; we rename it
-    // to the live path before opening so the full URL state is instantly
-    // available without any import step.
-    if (resume &&
-        !fs::exists(ROCKSDB_DIR / "CURRENT") &&
-         fs::exists(CHECKPOINT_DIR / "CURRENT")) {
-        std::cout << "Promoting checkpoint to live database...\n";
-        std::error_code ec;
-        fs::rename(CHECKPOINT_DIR, ROCKSDB_DIR, ec);
-        if (ec)
-            throw std::runtime_error("Failed to rename checkpoint: " + ec.message());
-    }
-
-    // True when we promoted a checkpoint or have a pre-existing local DB.
-    // When false we fall back to loading legacy chunk files (one-time migration).
-    const bool rocksDbExisted = fs::exists(ROCKSDB_DIR / "CURRENT");
-
-    // Open (or create) the RocksDB-backed URL state manager
-    fs::create_directories(STATE_DIR);
-    UrlStateManager urlMgr(ROCKSDB_DIR.string());
+    // Load every committed chunk.  This rebuilds the dedup tables from the
+    // repository itself -- there is no database and no cache to restore.
+    auto tLoad = std::chrono::steady_clock::now();
+    UrlStore store(URLS_DIR);
+    double loadSecs = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - tLoad).count();
+    std::cout << "Loaded URL store in " << loadSecs << "s: "
+              << store.visitedCount() << " visited, "
+              << store.pendingCount() << " pending\n";
 
     int         pagesScraped    = 0;
     int         urlsFound       = 0;
     double      originalElapsed = 0.0;
     std::string actualStartUrl  = startUrl;
-    size_t      visitedCount    = 0;
+    size_t      visitedCount    = store.visitedCount();
 
     if (resume) {
         if (fs::exists(STATE_FILE)) {
-            auto tResume = std::chrono::steady_clock::now();
             std::ifstream sf(STATE_FILE);
             if (!sf) throw std::runtime_error("cannot open state file");
 
@@ -426,107 +323,39 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
                 if (sp == std::string::npos) continue;
                 std::string key = line.substr(0, sp);
                 std::string val = line.substr(sp + 1);
-
                 try {
                     if      (key == "start_url")     actualStartUrl  = val;
                     else if (key == "pages_scraped") pagesScraped    = std::stoi(val);
                     else if (key == "urls_found")    urlsFound       = std::stoi(val);
                     else if (key == "elapsed_time")  originalElapsed = std::stod(val);
-                    // Legacy chunk keys (visited_chunk / to_visit_chunk) are
-                    // ignored; migration is handled below by auto-discovery.
                 } catch (const std::exception& e) {
                     std::cerr << "  Warning: bad value for key '" << key
                               << "': " << e.what() << " (skipping)\n";
                 }
             }
 
-            if (rocksDbExisted) {
-                // Fast path: checkpoint was promoted, open and go.
-                visitedCount = urlMgr.countByState(UrlState::COMPLETED);
-                double took  = std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - tResume).count();
-                std::cout << "  RocksDB ready in " << took << "s\n";
-            } else {
-                // Slow path: one-time migration from legacy chunk files.
-                // After this run the checkpoint is committed to git and this
-                // branch will never be taken again.
-                size_t importedVisited = 0, importedToVisit = 0;
-                size_t chunkV = 0, chunkT = 0;
-
-                auto importChunk = [&](const fs::path& p, UrlState st,
-                                       size_t& imported, size_t& idx,
-                                       const char* label) {
-                    std::cout << "  [" << label << " chunk " << idx
-                              << "] Loading " << p.string() << " ...\n";
-                    std::vector<std::string> chunk =
-                        (p.extension() == ".txt") ? loadChunkFromTxt(p.string())
-                                                  : loadChunkFromZip(p.string());
-                    std::cout << "    " << chunk.size() << " URLs read\n";
-                    imported += urlMgr.bulkImportFast(chunk, st);
-                    ++idx;
-                };
-
-                for (int i = 0; ; ++i) {
-                    fs::path pt = STATE_DIR / ("scraper_state_visited_" + std::to_string(i) + ".txt");
-                    fs::path pz = STATE_DIR / ("scraper_state_visited_" + std::to_string(i) + ".zip");
-                    if      (fs::exists(pt)) importChunk(pt, UrlState::COMPLETED,  importedVisited, chunkV, "visited");
-                    else if (fs::exists(pz)) importChunk(pz, UrlState::COMPLETED,  importedVisited, chunkV, "visited");
-                    else break;
-                }
-                for (int i = 0; ; ++i) {
-                    fs::path pt = STATE_DIR / ("scraper_state_to_visit_" + std::to_string(i) + ".txt");
-                    fs::path pz = STATE_DIR / ("scraper_state_to_visit_" + std::to_string(i) + ".zip");
-                    if      (fs::exists(pt)) importChunk(pt, UrlState::DISCOVERED, importedToVisit, chunkT, "to-visit");
-                    else if (fs::exists(pz)) importChunk(pz, UrlState::DISCOVERED, importedToVisit, chunkT, "to-visit");
-                    else break;
-                }
-
-                urlMgr.flushAll();
-                // Delete the temporary chunk files so they are not committed.
-                cleanupOldChunks();
-
-                visitedCount = importedVisited;
-                double took  = std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - tResume).count();
-                std::cout << std::string(80, '-') << '\n'
-                          << "  Migrated " << importedVisited << " visited + "
-                          << importedToVisit << " to-visit URLs in " << took << "s\n";
-            }
-
             maxPages = pagesScraped + maxPages;
-            std::cout << std::string(80, '-') << '\n'
-                      << "  Previous start URL: "    << actualStartUrl << '\n'
+            std::cout << "  Previous start URL: "    << actualStartUrl << '\n'
                       << "  Pages already scraped: " << pagesScraped   << '\n'
                       << "  URLs visited: "          << visitedCount   << '\n'
                       << "  Will scrape up to " << maxPages
                       << " total pages (continuing from " << pagesScraped << ")\n";
         } else {
             std::cout << "No saved state found. Starting fresh...\n";
-            if (!startUrl.empty())
-                urlMgr.checkAndSet(startUrl, UrlState::DISCOVERED);
+            if (!startUrl.empty()) store.addDiscovered(startUrl);
         }
     } else {
-        urlMgr.checkAndSet(startUrl, UrlState::DISCOVERED);
+        store.addDiscovered(startUrl);
     }
 
-    // Reset any interrupted CRAWLING URLs back to DISCOVERED for retry.
-    // Collect them first (can't modify DB safely while the iterator is live).
-    {
-        std::vector<std::string> crawling;
-        urlMgr.forEachUrlByState(UrlState::CRAWLING,
-            [&](const std::string& url) { crawling.push_back(url); });
-        for (const auto& url : crawling)
-            urlMgr.setState(url, UrlState::DISCOVERED);
-        if (!crawling.empty())
-            std::cout << "  Reset " << crawling.size()
-                      << " interrupted CRAWLING URL(s) to DISCOVERED\n";
+    // Nothing pending and nothing known about the start URL means the store was
+    // lost (or this is a first run); re-seed so the crawl can make progress.
+    if (store.pendingCount() == 0 && !actualStartUrl.empty()
+        && !store.isKnown(actualStartUrl)) {
+        std::cout << "\nNothing pending and the start URL is unknown; re-seeding from: "
+                  << actualStartUrl << '\n' << std::string(80, '-') << '\n';
+        store.addDiscovered(actualStartUrl);
     }
-
-    // Build in-memory work queue directly from RocksDB without an intermediate
-    // vector, halving the peak RAM needed (important when queue has 30 M+ URLs).
-    std::queue<std::string> toVisitQueue;
-    urlMgr.forEachUrlByState(UrlState::DISCOVERED,
-        [&](const std::string& url) { toVisitQueue.push(url); });
 
     auto sessionStart = std::chrono::steady_clock::now();
 
@@ -549,55 +378,46 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
     //      re-seed it and the crawl restarts instead of idling forever.
     //   2. The crawl genuinely exhausted every URL reachable from the start URL,
     //      in which case the start URL is already recorded and we only warn.
-    if (resume && toVisitQueue.empty()) {
-        if (!actualStartUrl.empty() && !urlMgr.exists(actualStartUrl)) {
-            std::cout << "\nQueue is empty and the start URL is unknown to the "
-                         "database (state was lost).\n"
-                      << "Re-seeding from: " << actualStartUrl << '\n'
-                      << std::string(80, '-') << '\n';
-            urlMgr.checkAndSet(actualStartUrl, UrlState::DISCOVERED);
-            toVisitQueue.push(actualStartUrl);
-        } else {
-            std::cout << "\nWarning: No URLs in queue to scrape!\n"
-                      << "The scraper has already visited all discoverable URLs from the start URL.\n"
-                      << "Scraping cannot continue without URLs in the queue.\n"
-                      << std::string(80, '-') << '\n';
-        }
-    }
-
     ThreadPool pool(numWorkers);
 
-    // Progress bar tracks pages scraped in this run only.
-    // pagesScraped already includes previously scraped pages (from resume);
-    // runTarget is the per-run limit relative to that baseline.
     const int runStart  = pagesScraped;
     const int runTarget = maxPages - runStart;
     ProgressBar pbar(static_cast<std::size_t>(runTarget), "Scraping");
 
-    while (!toVisitQueue.empty()) {
+    // Work waiting to be crawled in this run.  Pending URLs stream in from the
+    // committed chunks one chunk at a time, so the full frontier (tens of
+    // millions) never sits in memory; newly discovered URLs join the back.
+    std::deque<std::string> work;
+    bool limitHit = false;
+
+    // Seed/re-seed URLs added above live only in the store's pending-write
+    // buffer, which forEachPending cannot see (it reads committed chunks).
+    // Prime the work queue with them or a first run would crawl nothing.
+    for (const auto& u : store.newlyQueued()) work.push_back(u);
+
+    auto limitsReached = [&] {
         if (elapsed() > maxSeconds) {
             std::cout << "\nSession execution time limit reached (" << elapsed() << " seconds)\n";
-            break;
+            return true;
         }
         if (pagesScraped >= maxPages) {
             std::cout << "\nMax pages limit reached (" << pagesScraped << " pages)\n";
-            break;
+            return true;
         }
+        return false;
+    };
 
-        // Build a batch of DISCOVERED URLs, up to numWorkers in size
+    // Crawl up to numWorkers URLs from the front of `work`.
+    auto crawlBatch = [&] {
         std::vector<std::string> batch;
-        while (!toVisitQueue.empty() && static_cast<int>(batch.size()) < numWorkers) {
-            std::string url = std::move(toVisitQueue.front());
-            toVisitQueue.pop();
-            UrlState st;
-            if (urlMgr.getState(url, st) && st == UrlState::DISCOVERED) {
-                urlMgr.setState(url, UrlState::CRAWLING);
-                batch.push_back(std::move(url));
-            }
+        while (!work.empty() && static_cast<int>(batch.size()) < numWorkers) {
+            std::string url = std::move(work.front());
+            work.pop_front();
+            if (store.isVisited(url)) continue;   // already done in an earlier run
+            batch.push_back(std::move(url));
         }
-        if (batch.empty()) continue;
+        if (batch.empty()) return;
 
-        // Fetch all URLs in the batch in parallel
         using Result = std::pair<std::string, UrlSet>;
         std::vector<std::future<Result>> futures;
         futures.reserve(batch.size());
@@ -609,10 +429,9 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             }));
         }
 
-        // Process results as they finish (in submission order)
         for (auto& fut : futures) {
             auto [url, found] = fut.get();
-            urlMgr.setState(url, UrlState::COMPLETED);
+            store.markVisited(url);
             ++pagesScraped;
             ++visitedCount;
 
@@ -622,30 +441,54 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
             urlsFound += static_cast<int>(found.size());
             size_t newCount = 0;
             for (const auto& u : found) {
-                if (urlMgr.checkAndSet(u, UrlState::DISCOVERED)) {
-                    toVisitQueue.push(u);
+                if (store.addDiscovered(u)) {
                     ++newCount;
+                    // Persisted regardless; only queue it in memory while the
+                    // in-flight buffer is small, so RAM stays bounded.
+                    if (work.size() < MAX_INFLIGHT_WORK) work.push_back(u);
                 }
             }
             std::cout << "  Found " << found.size() << " URLs (" << newCount << " new)\n"
-                      << "  Queue size: " << toVisitQueue.size()
+                      << "  In-flight queue: " << work.size()
                       << ", Visited: " << visitedCount << '\n'
                       << "  Elapsed time: " << totalElapsed << "s\n";
 
             pbar.update(static_cast<std::size_t>(pagesScraped - runStart));
         }
+    };
+
+    // Pass 1: drain the committed backlog, crawling as it streams in.
+    store.forEachPending([&](const std::string& u) {
+        work.push_back(u);
+        if (static_cast<int>(work.size()) >= numWorkers) {
+            crawlBatch();
+            if (limitsReached()) { limitHit = true; return false; }
+        }
+        return true;
+    });
+
+    // Pass 2: whatever is left in memory, including this run's discoveries.
+    while (!limitHit && !work.empty()) {
+        crawlBatch();
+        if (limitsReached()) { limitHit = true; break; }
     }
 
     pbar.finish(static_cast<std::size_t>(pagesScraped - runStart));
 
     double totalTime = originalElapsed + elapsed();
 
-    // Count queue remaining without materialising the full URL list.
-    size_t finalQueueSize = urlMgr.countByState(UrlState::DISCOVERED);
+    // Persist this run's discoveries and crawled URLs as brand-new chunks.
+    // Existing chunks are never rewritten.
+    // Read the counters before flush(), which clears the pending buffers.
+    const size_t wroteVisited = store.newVisitedThisRun();
+    const size_t wroteQueued  = store.newQueuedThisRun();
+    store.flush();
+    std::cout << "  Wrote " << wroteVisited << " newly visited and "
+              << wroteQueued << " newly queued URLs\n";
+    size_t finalQueueSize = store.pendingCount();
 
     // Write metadata state file.
-    // The full URL state is persisted in the RocksDB checkpoint that
-    // UrlStateManager::seal() creates on destruction (see below).
+    // The full URL state lives in the zipped chunks written by store.flush().
     {
         fs::create_directories(STATE_DIR);
         std::ofstream f(STATE_FILE);
@@ -665,8 +508,6 @@ static ScrapeResult scrape(const std::string& startUrl, int maxPages,
               << "Unique URLs visited: "     << visitedCount   << '\n'
               << "URLs remaining in queue: " << finalQueueSize << '\n';
 
-    // UrlStateManager destructor calls seal(), which creates/updates the
-    // RocksDB checkpoint at state/url_state_db_checkpoint/.
     return {actualStartUrl, totalTime, pagesScraped, urlsFound,
             visitedCount, finalQueueSize};
 }
