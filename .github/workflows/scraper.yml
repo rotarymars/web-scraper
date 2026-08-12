@@ -1,8 +1,11 @@
 name: Wikipedia Scraper
 
 on:
+  # Each run dispatches its successor as its last step, so the crawl is
+  # effectively continuous.  This cron is only a watchdog: if a run dies before
+  # it can chain (runner loss, cancellation), it restarts the chain.
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       max_pages:
@@ -22,6 +25,11 @@ on:
         type: boolean
         required: false
         default: false
+      chain:
+        description: 'Dispatch the next run when this one finishes (uncheck for a one-off run)'
+        type: boolean
+        required: false
+        default: true
 
 # Never let two crawls run at once: they would fork the URL database and race
 # each other pushing state/scraper_state.dat.
@@ -42,12 +50,16 @@ jobs:
       actions: write   # required to prune superseded caches
 
     steps:
-      # A shallow checkout is essential: the repository history is ~7.6 GB
-      # (legacy state dumps), while the tip tree is a handful of source files.
+      # Shallow: nothing here needs history, and the corpus chunks make each
+      # tree non-trivial even though the history itself is now small.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      # Used by the chaining step to detect a crash-loop (see below).
+      - name: Record start time
+        run: echo "RUN_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Free up runner disk space
         run: |
@@ -99,10 +111,24 @@ jobs:
             echo "Reset requested; discarding database and cumulative counters."
             rm -rf state/url_state_db state/url_state_db_checkpoint state/scraper_state.dat
           fi
+
+          # On a reset, drop the committed corpus too, otherwise the scraper
+          # would immediately re-import it and the reset would do nothing.
+          if [ "$RESET" = "true" ]; then
+            rm -f state/scraper_state_visited_*.txt state/scraper_state_to_visit_*.txt
+          fi
+
           if [ -f state/url_state_db/CURRENT ]; then
             echo "Live database ready: $(du -sh state/url_state_db | cut -f1)"
           else
-            echo "No database present; the crawl will re-seed from the start URL."
+            v=$(ls state/scraper_state_visited_*.txt 2>/dev/null | wc -l)
+            q=$(ls state/scraper_state_to_visit_*.txt 2>/dev/null | wc -l)
+            if [ "$v" -gt 0 ] || [ "$q" -gt 0 ]; then
+              echo "No database; the scraper will rebuild it from the committed"
+              echo "corpus ($v visited chunk(s), $q frontier chunk(s)) — takes about a minute."
+            else
+              echo "No database and no corpus; the crawl re-seeds from the start URL."
+            fi
           fi
           # Resume whenever cumulative metadata survives, even without a
           # database: the scraper re-seeds the start URL in that case, which
@@ -116,6 +142,7 @@ jobs:
       # The crawl budget keeps the run comfortably inside the 6h job limit,
       # leaving room to archive and upload a multi-GB database afterwards.
       - name: Run scraper
+        id: scrape
         env:
           RESUME: ${{ steps.unpack.outputs.resume }}
           MAX_PAGES: ${{ inputs.max_pages || '100000' }}
@@ -127,6 +154,56 @@ jobs:
           else
             ./scraper --wikipedia "$MAX_PAGES" --workers "$WORKERS" --max-seconds "$MAX_SECONDS"
           fi
+
+      # The crawled-URL corpus is the durable product, so it lives in git as
+      # plain sorted text rather than only in the evictable cache.  The chunk
+      # names are the ones the scraper already imports on a cache miss, so
+      # recovery needs no extra code.
+      #
+      # Refreshed at most once a day: the corpus is rewritten wholesale each
+      # time, and committing it every run costs ~5 GB/year of history against
+      # ~1.8 GB/year at this cadence.  The cache carries state between runs, so
+      # a day-old corpus only ever costs re-crawl time after a cache loss.
+      - name: Export URL corpus
+        id: corpus
+        if: ${{ always() && steps.scrape.outcome == 'success' }}
+        env:
+          CORPUS_MAX_AGE_SECONDS: '86400'
+          FRONTIER_CAP: '500000'
+        run: |
+          newest=$(git log -1 --format=%ct -- 'state/scraper_state_visited_*.txt' 2>/dev/null || echo 0)
+          age=$(( $(date +%s) - ${newest:-0} ))
+          if [ "${newest:-0}" -ne 0 ] && [ "$age" -lt "$CORPUS_MAX_AGE_SECONDS" ]; then
+            echo "Corpus is $((age/3600))h old; not refreshing this run."
+            echo "refreshed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rm -f state/scraper_state_visited_*.txt state/scraper_state_to_visit_*.txt
+          ./extract_urls --visited  --output visited.txt
+          ./extract_urls --to-visit --output frontier_full.txt
+          # Cap the frontier: the full queue is tens of millions of URLs and
+          # belongs in the cache.  This slice only has to give a cache-miss
+          # recovery enough to crawl from, since crawling regrows the rest.
+          head -n "$FRONTIER_CAP" frontier_full.txt > frontier.txt
+          # GitHub rejects files over 100 MB; keep chunks well under.
+          # The scraper scans for <prefix>0.txt, <prefix>1.txt ... and stops at
+          # the first gap, so the suffixes must be unpadded and contiguous —
+          # split's own zero-padded names (_000) would match nothing.
+          chunk() {
+            src="$1"; prefix="$2"; i=0
+            split -C 95m -d -a 4 "$src" "${prefix}part_"
+            for f in "${prefix}"part_*; do
+              [ -e "$f" ] || continue
+              mv "$f" "${prefix}${i}.txt"
+              i=$((i + 1))
+            done
+          }
+          chunk visited.txt  state/scraper_state_visited_
+          chunk frontier.txt state/scraper_state_to_visit_
+          rm -f visited.txt frontier.txt frontier_full.txt
+          echo "visited chunks : $(ls state/scraper_state_visited_*.txt 2>/dev/null | wc -l)"
+          echo "frontier chunks: $(ls state/scraper_state_to_visit_*.txt 2>/dev/null | wc -l)"
+          echo "refreshed=true" >> "$GITHUB_OUTPUT"
 
       # Runs even when the crawl fails or times out. RocksDB writes with
       # sync=true, so the live database is recoverable from its WAL on the next
@@ -184,9 +261,24 @@ jobs:
       # itself stays in the cache.
       - name: Commit and push results
         if: always()
+        env:
+          CORPUS_REFRESHED: ${{ steps.corpus.outputs.refreshed }}
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
+          # The scraper DELETES the corpus chunks once it has imported them, so
+          # staging those paths unconditionally would commit their deletion on
+          # any run that consumed them without re-exporting (a crawl that failed
+          # after import). Only stage the corpus when this run actually rebuilt
+          # it; otherwise restore whatever is committed.
+          if [ "$CORPUS_REFRESHED" = "true" ]; then
+            # -A so chunks that vanish as the corpus re-splits are staged as
+            # deletions rather than lingering as stale files.
+            git add -A -- 'state/scraper_state_visited_*.txt' 'state/scraper_state_to_visit_*.txt'
+          else
+            git checkout -- 'state/scraper_state_visited_*.txt' \
+                            'state/scraper_state_to_visit_*.txt' 2>/dev/null || true
+          fi
           for attempt in 1 2 3; do
             git add state/scraper_state.dat scraper_results.txt
             if git diff --staged --quiet; then
@@ -209,3 +301,33 @@ jobs:
           done
           echo "::error::Failed to push results after 3 attempts"
           exit 1
+
+      # Start the next crawl immediately instead of waiting for the cron.
+      # A push made with GITHUB_TOKEN never triggers a workflow, so `on: push`
+      # cannot chain; workflow_dispatch is the documented exception to that
+      # rule, so the run dispatches its own successor.
+      #
+      # Only chains when the crawl itself succeeded, so a broken build or a
+      # failing crawl stops the chain rather than spinning.  The floor delay
+      # covers the remaining hot-loop case: a crawl that exits successfully in
+      # seconds (e.g. an exhausted queue) would otherwise re-dispatch flat out.
+      # Requires the cache save to have succeeded too: chaining after a failed
+      # save would send the next run back to the seed snapshot, silently
+      # discarding this run's crawling.  When that happens the cron picks it up.
+      - name: Chain the next run
+        # `inputs.chain != false` would be wrong: on a scheduled run `inputs` is
+        # null, and GitHub casts both null and false to 0, so it would compare
+        # equal and the watchdog run would never restart the chain.
+        if: ${{ always() && steps.scrape.outcome == 'success' && steps.save.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.chain) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIN_CYCLE_SECONDS: '600'
+        run: |
+          elapsed=$(( $(date +%s) - RUN_STARTED_AT ))
+          if [ "$elapsed" -lt "$MIN_CYCLE_SECONDS" ]; then
+            wait=$(( MIN_CYCLE_SECONDS - elapsed ))
+            echo "Run took only ${elapsed}s; waiting ${wait}s before chaining."
+            sleep "$wait"
+          fi
+          echo "Dispatching the next run on $GITHUB_REF_NAME"
+          gh workflow run scraper.yml --ref "$GITHUB_REF_NAME"
