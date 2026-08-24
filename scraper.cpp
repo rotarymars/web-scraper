@@ -99,11 +99,6 @@ private:
     bool                                stop_ = false;
 };
 
-// ── Migration helpers (used only when upgrading from the old chunk-file format) ─
-
-
-
-
 // State file format (state/scraper_state.dat):
 //   One "key value" pair per line.
 //
@@ -112,7 +107,7 @@ private:
 //   urls_found     <int>
 //   elapsed_time   <double>
 //
-// Full URL state lives in state/url_state_db_checkpoint/ (committed to git).
+// Full URL state lives in urls/ as immutable zip chunks (see url_store.hpp).
 
 // ── URL utilities ─────────────────────────────────────────────────────────────
 

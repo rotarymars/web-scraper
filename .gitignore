@@ -1,50 +1,19 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+# Compiled binaries; build them from source with the command in each file's header.
+scraper
+extract_urls
 
-# Virtual Environment
-venv/
-env/
-ENV/
-
-# IDE
+# Editors / OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Output files
-*.log
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Compiled binaries; build them from source with the command in each file's header.
-scraper
-extract_urls
+*.log
 
+# Written by GitHub code scanning during a CodeQL run.
 _codeql_detected_source_root
-
-scraped.txt
 
 # The URL store is tracked: urls/**/*.zip are the crawl state.
