@@ -1,7 +1,7 @@
 Web Scraper Results
 ================================================================================
 Start URL: https://en.wikipedia.org/wiki/Main_Page
-Total Time: 5.06984e+06 seconds
-Pages Scraped: 14767004
-Total URLs Found: 1514479595
-Unique URLs Visited: 10560985
+Total Time: 5.08064e+06 seconds
+Pages Scraped: 14808819
+Total URLs Found: 1517842738
+Unique URLs Visited: 10602800
